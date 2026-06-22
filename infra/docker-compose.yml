@@ -1,0 +1,40 @@
+# Local infra (ADR-002, ADR-003, ADR-007). Postgres backs both pgvector (corpus
+# retrieval, roadmap item 4) and the LangGraph checkpointer (HITL durability,
+# roadmap item 9). Redis backs the LiteLLM proxy's semantic cache (ADR-018,
+# roadmap item 12). mock-staging-api is added later by ADR-016/Feature 10.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    depends_on:
+      - redis
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+
+volumes:
+  pgdata:
+  redisdata:

@@ -469,6 +469,52 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
 
 ---
 
+### ADR-021: Sandbox dependency substitution for Feature 01 implementation (new)
+- **Context:** Phase 4 implementation (writing real code/tests against the 14
+  designed features) began in a sandboxed execution environment with no PyPI
+  egress — confirmed by repeated `pip install`/`pip download` attempts against
+  `langgraph`, `langchain-core`, `langchain-openai`, `pydantic`, and `pytest`, all
+  rejected at the network proxy (`X-Proxy-Error: blocked-by-allowlist`). Only
+  packages already preinstalled in the sandbox's base image are usable; none of the
+  project's intended core dependencies are present. This is an execution-environment
+  constraint, not a design decision — it was not anticipated when ADR-001 through
+  ADR-020 specified `langgraph`/`langchain`/`pydantic` as the stack.
+- **Decision:** Feature 01 (and, until this constraint lifts, subsequent features)
+  implements against **stdlib-only stand-ins** for the blocked packages, so real,
+  runnable, passing code and tests exist now rather than only on paper:
+  - `src/gateway/client_factory.py`: `_ChatClient`/`_EmbeddingClient` (plain
+    `dataclasses`) replace `ChatOpenAI`/`OpenAIEmbeddings`, preserving the
+    attribute surface (`.model_name`/`.model`, `.openai_api_base`) callers depend
+    on. They do not make network calls — `.invoke()`/`.embed_documents()` raise
+    `NotImplementedError` until the real clients are swapped in.
+  - `src/graph/_compat.py`: a minimal `StateGraph`/`START`/`END` shim replacing
+    `langgraph.graph`, supporting only **linear** chains (`add_node`/`add_edge`/
+    `compile()`/`invoke()`). It deliberately raises `GraphNotLinearError` on
+    branching or cycles rather than silently misbehaving — Features 04 (router
+    branching), 06 (self-RAG retry loop), and 09 (HITL interrupt/resume) cannot be
+    faithfully implemented against this shim and will need real `langgraph`.
+  - `IncidentState` (`src/graph/state.py`) and `guardrail_check()`
+    (`src/guardrails/check.py`) needed no substitution — both were already
+    stdlib-only (`typing.TypedDict`/`Literal`).
+  - Tests use stdlib `unittest` instead of `pytest` (also blocked), runnable via
+    `python3 -m unittest discover -s tests`.
+  - `requirements.txt`/`pyproject.toml` are left declaring the **real** intended
+    dependencies (`langgraph`, `langchain-openai`, `pytest`, etc.) — they document
+    the target stack for when this is run somewhere with normal PyPI access (the
+    user's own machine), not the sandbox's actual capability.
+- **Consequences:** Every feature's "real, passing tests" Definition of Done
+  (§8.5) is currently satisfied against these shims, not the real frameworks.
+  This is a known, explicit gap, not a silent one — Open Question #15 tracks
+  swapping each shim for its real dependency and re-verifying parity before
+  treating any feature as production-ready. The further the roadmap proceeds
+  under this constraint, the more retrofit work #15 will represent; Features 04,
+  06, and 09 in particular cannot be honestly implemented against `_compat.py`
+  and will force the issue sooner rather than later.
+- **Status:** Accepted (provisional — superseded the moment real package access is
+  available).
+
+---
+
 ## 3. Production RAG Blueprint
 
 ### Pillar 1 — Advanced RAG Mechanics
@@ -742,7 +788,7 @@ guardrail_output -(safe, post-execution)-> END
 
 | Feature ID | Description | Phase Introduced | Status | PMA Sections Touched |
 |---|---|---|---|---|
-| `feature-01-infra-bootstrap` | docker-compose infra, `client_factory.py`, `guardrail_check()` stub, `IncidentState` schema, empty entry→END graph | Phase 4 | In Progress | ADR-007 (new), §3 Pillar 3, §3 Pillar 5, §9 item 1 |
+| `feature-01-infra-bootstrap` | docker-compose infra, `client_factory.py`, `guardrail_check()` stub, `IncidentState` schema, empty entry→END graph; implemented against stdlib shims (ADR-021) for `langgraph`/`langchain-openai`/`pytest` due to sandbox PyPI block; 14/14 tests passing via `python3 -m unittest` | Phase 4 | **Done** | ADR-007 (new), ADR-021 (new), §3 Pillar 3, §3 Pillar 5, §7 (new Open Question #15), §9 item 1 |
 | `feature-02-eval-harness` | `evals/golden_incidents.jsonl`, `evals/judge_prompt.md`, ragas + LangSmith evaluator wiring, `make eval` CI job | Phase 4 | In Progress | ADR-008 (new), §3 Pillar 4, §9 item 2 |
 | `feature-03-guardrail-input-node` | `guardrail_input` node + new `reject` node; corrects §5.2 to include the rejection branch | Phase 4 | In Progress | ADR-009 (new, retrofit), §5.1, §5.2, §3 Pillar 3, §9 item 3 |
 | `feature-04-ingestion-router-node` | Corpus ingestion into pgvector + `router` node; corrects Pillar 1 prose to single-corpus routing | Phase 4 | In Progress | ADR-010 (new, retrofit), §3 Pillar 1, §9 item 4 |
@@ -831,6 +877,17 @@ guardrail_output -(safe, post-execution)-> END
     `context_precision` by a configured margin) but the margin's numeric value has no
     empirical basis yet — same pattern as Open Questions #8, #12, and #13. Revisit
     once an actual fine-tuning run and A/B eval have produced real numbers.
+15. **Sandbox dependency shims must be swapped for real packages:** ADR-021
+    (Feature 01) substituted stdlib stand-ins for `langgraph`, `langchain-openai`,
+    `pydantic`, and `pytest` because this sandbox has no PyPI egress. Before any
+    feature implemented under this constraint is treated as production-ready: (a)
+    swap `src/gateway/client_factory.py`'s `_ChatClient`/`_EmbeddingClient` for the
+    real `ChatOpenAI`/`OpenAIEmbeddings`, (b) swap `src/graph/_compat.py` for real
+    `langgraph.graph`, (c) re-run the full suite with real `pytest` somewhere with
+    network access (e.g., the user's own machine via
+    `pip install -r requirements.txt`), and (d) confirm no behavior gap — especially
+    for Features 04/06/09, which need branching/cycles/interrupts the `_compat.py`
+    shim cannot represent at all.
 
 ---
 
@@ -1019,10 +1076,13 @@ passed the full Definition of Done (§8.5) and has a corresponding row in the Fe
 Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not skip ahead
 — each item assumes the ones above it exist.
 
-- [ ] 1. Bootstrap local infra: docker-compose for Postgres+pgvector, Redis, and the
+- [x] 1. Bootstrap local infra: docker-compose for Postgres+pgvector, Redis, and the
       LiteLLM proxy; implement `src/gateway/client_factory.py` as the only path to
       model clients; stub `guardrail_check()`; define the initial `IncidentState`
-      schema and an empty graph with just `entry`→`END`.
+      schema and an empty graph with just `entry`→`END`. **Done** — implemented
+      against stdlib shims per ADR-021 (sandbox has no PyPI egress); 14/14 tests
+      pass via `python3 -m unittest discover -s tests`. Open Question #15 tracks
+      swapping the shims for real `langgraph`/`langchain-openai`/`pytest`.
 - [ ] 2. Build the eval harness: author `evals/golden_incidents.jsonl` (20+ synthetic
       incidents with reference root cause, reference remediation, and pass/fail
       rubric), write `evals/judge_prompt.md`, and wire ragas (`context_precision`,
