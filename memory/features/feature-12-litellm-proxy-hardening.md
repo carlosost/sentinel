@@ -1,0 +1,158 @@
+# Feature 12 — LiteLLM Proxy Production Hardening
+
+**Phase introduced:** Phase 4
+**Status:** In Progress (design complete; implementation/tests pending)
+**PMA sections touched:** ADR-018 (new), §5.3, §3 Pillar 5, §3 Pillar 4, §7 (new Open
+Question), §6 Feature Log, §9 item 12
+
+## Feature Description
+
+Configure the LiteLLM proxy for production behavior: a primary→secondary fallback
+chain, Redis-backed semantic caching, and per-API-key rate limits, with cost/usage
+logging tagged to LangSmith `trace_id`.
+
+## Step 1 — Conflict Check
+
+| ADR / Contract | Verdict |
+|---|---|
+| ADR-001, ADR-002 | No conflict — no graph/checkpointer surface touched. |
+| ADR-003 (Gateway exists) | No conflict — this is the direct fulfillment of the "configured behaviors" ADR-003/Pillar 5 already named but never specified: fallback, caching, rate limits were promised, not designed, until now. |
+| ADR-004 (Guardrail stub) | No conflict — Llama Guard is described as "served behind the gateway," but `guardrail_check()` v1 is still a hardcoded stub (no real model call yet per ADR-004/007), so there is no real guardrail model traffic for this feature's config to apply to yet. Noted as a forward dependency for roadmap item 13, not a gap to fix here. |
+| ADR-005 (Eval strategy) | **Conflict risk identified, resolved below.** Semantic caching, if applied uniformly, could mask a live model's actual current behavior behind a stale cached response during an eval run — silently undermining ADR-005's requirement that eval scores reflect real model output. Resolved by an explicit cache carve-out (see Decision). |
+| ADR-006 (Lint enforcement) | No conflict — proxy config doesn't change client construction paths. |
+| ADR-007 (Scaffolding) | No conflict, gap: `docker-compose.yml` provisions a bare `litellm` service but no proxy config file exists yet. Filled additively below. |
+| ADR-008 (Eval harness) | No conflict, see ADR-005 row — the eval harness's LLM calls are the specific call site that needs the cache carve-out. |
+| ADR-009 through ADR-017 | No conflict — unrelated surfaces (graph nodes, schema fields, HITL, execution). This feature touches infra config only. |
+| §5.1 IncidentState schema | No conflict — no field added or changed. |
+| §5.2 Graph skeleton | No conflict — confirmed at approval time; this feature adds no node and changes no edge. |
+| §5.3 Gateway contract | No conflict — extended with concrete configured behaviors; the existing one-line contract ("every client only via `client_factory.py`") is unaffected, just given substance. |
+| §8.2 Deterministic Tier ("Gateway fallback/caching/rate-limit *behavior*") | No conflict — this is the first feature to actually implement the test surface §8.2 already anticipated by name. |
+
+**Verdict: ADDITIVE.** No existing ADR or contract is contradicted; one genuine design
+gap (eval-determinism vs. caching) is resolved explicitly rather than left to silently
+collide later.
+
+## New ADR
+
+### ADR-018: LiteLLM proxy production configuration — fallback, caching with an eval carve-out, per-key rate limits, trace_id propagation
+- **Context:** ADR-003 established that the gateway exists and is the sole chokepoint
+  for model calls, and named fallback/caching/rate-limiting as the payoff — but none
+  of those behaviors were ever actually configured. Configuring caching naively would
+  also create an undetected conflict with ADR-005's eval-determinism requirement.
+- **Decision:**
+  - **Model aliases & fallback:** `infra/litellm_config.yaml` defines named model
+    aliases (e.g. `sentinel-chat`, `sentinel-embedding`) each with a primary provider
+    model and one fallback provider model, configured via LiteLLM's native
+    `fallbacks` list. `client_factory.get_chat_client(model=...)` and
+    `get_embedding_client(model=...)` pass these alias names, not raw provider model
+    strings — so fallback chains are swappable in config without touching node code.
+  - **Redis-backed semantic caching:** enabled proxy-wide, keyed on
+    (alias, prompt-embedding similarity) per LiteLLM's semantic cache feature, default
+    TTL applied.
+  - **Eval-determinism carve-out (resolves the ADR-005 conflict risk):** every call
+    made by the eval harness (`evals/` code, both ragas's internal calls and the
+    `sentinel_remediation_judge` evaluator) passes `cache={"no-cache": True}` in its
+    LiteLLM request, guaranteeing eval runs always hit a live model. Only
+    graph-node traffic (the application path) is eligible for cache hits.
+  - **Per-API-key rate limits & cost attribution:** three LiteLLM virtual keys are
+    issued — `sentinel-app` (graph nodes, production traffic budget),
+    `sentinel-eval` (CI eval harness, separate budget so a `make eval` run can never
+    starve application traffic of rate-limit headroom), and `sentinel-dev` (local
+    interactive use). Each has its own requests-per-minute and monthly budget cap in
+    `litellm_config.yaml`. Specific numeric caps are placeholders pending real usage
+    data (new Open Question).
+  - **Cost/usage logging tagged to LangSmith `trace_id`:** `client_factory` reads the
+    active LangSmith run's trace ID from context and attaches it as
+    `metadata={"trace_id": ...}` on every LiteLLM request, so the proxy's own
+    cost/usage logs and LangSmith's trace view can be joined on `trace_id` —
+    directly implements Project Charter success criterion 4.
+- **Consequences:** Fallback/caching/rate-limit specifics are now a fixed contract
+  (`infra/litellm_config.yaml`); changing the eval carve-out's mechanism (e.g.,
+  removing the `no-cache` override) later is a retrofit against this ADR, not a
+  transparent tuning change, since it would silently reintroduce the ADR-005 risk.
+- **Status:** Accepted.
+
+## Blast Radius
+
+Additive — no existing ADR superseded, no existing test/spec files broken. This is
+the first feature to implement test surface §8.2 had already named in advance
+("Gateway fallback/caching/rate-limit behavior"), so no PMA-described expectation is
+contradicted, only fulfilled.
+
+**New Open Question flagged:** rate-limit/budget numeric caps for the three virtual
+keys are placeholders with no empirical basis — same pattern as ADR-012's relevance
+threshold (Open Question #8). Needs revisiting once real usage/cost data exists.
+
+## Pillar Impact
+
+- [x] 5. AI Gateway — fallback chains, semantic caching, per-key rate limits, and
+      trace_id-tagged cost logging are now fully specified, closing the gap §3 Pillar
+      5's "Implementation status (Feature 01)" note had flagged as deferred to this
+      roadmap item.
+- [x] 4. LLM Evals — the eval-determinism carve-out (`cache: no-cache` on all eval
+      harness calls) is a necessary precondition for ADR-005/008's baseline-comparison
+      model to remain valid once caching exists anywhere in the system.
+- [ ] 1, 2, 3, 6 — not touched.
+
+## Gherkin
+
+```gherkin
+@gateway
+Feature: LiteLLM proxy production behaviors
+
+  Scenario: a provider timeout triggers fallback to the secondary model
+    Given the primary model for alias "sentinel-chat" is mocked to time out
+    When a node calls client_factory.get_chat_client(model="sentinel-chat")
+    Then the response comes from the configured fallback model
+    And the LangSmith span records the fallback occurred
+
+  Scenario: a repeated application request is served from cache
+    Given a graph node makes the same chat request twice in a row
+    When the second request is sent
+    Then the proxy returns a cached response without re-calling the provider
+
+  Scenario: eval harness calls never hit the cache
+    Given the eval harness (ragas or sentinel_remediation_judge) makes a request
+      identical to one already cached
+    When that request is sent
+    Then the request includes cache={"no-cache": true}
+    And the provider is called live, not served from cache
+
+  Scenario: the eval virtual key's rate limit is independent of the app key's
+    Given sentinel-app's rate limit is exhausted
+    When the eval harness makes a request using the sentinel-eval key
+    Then the request succeeds, unaffected by sentinel-app's limit
+
+  Scenario: every request is tagged with the active LangSmith trace_id
+    Given a node makes a gateway call inside a traced LangSmith run
+    When the request reaches the proxy
+    Then its metadata includes the run's trace_id
+```
+
+## PyTest Skeletons (all Deterministic Tier — proxy config/behavior contracts, simulated provider failures and mocked cache state; whether fallback/caching changes response *quality* is out of scope, per §8.2's Pillar 5 row: "n/a, gateway behavior is deterministic by design")
+
+```python
+# tests/gateway/test_litellm_production_config.py
+
+def test_provider_timeout_triggers_fallback(mock_litellm_proxy):
+    """Deterministic Tier."""
+    ...
+
+def test_repeated_app_request_is_cache_hit(mock_litellm_proxy):
+    """Deterministic Tier."""
+    ...
+
+def test_eval_harness_requests_always_set_no_cache(mock_litellm_proxy):
+    """Deterministic Tier. Enforces ADR-018's eval-determinism carve-out —
+    this is the test that would catch a future regression reintroducing the
+    ADR-005 risk."""
+    ...
+
+def test_eval_and_app_virtual_keys_have_independent_rate_limits(mock_litellm_proxy):
+    """Deterministic Tier."""
+    ...
+
+def test_every_gateway_call_carries_trace_id_metadata(mock_litellm_proxy, mock_langsmith_run):
+    """Deterministic Tier. Enforces Project Charter success criterion 4."""
+    ...
+```
