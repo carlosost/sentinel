@@ -515,6 +515,45 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
 
 ---
 
+### ADR-022: Dockerfile + Makefile for local dev/test (new)
+- **Context:** with Feature 01 implemented, the project needed a way to actually
+  run the real dependency stack (real `langgraph`/`langchain-openai`/`pytest` per
+  `requirements.txt`) on a machine with normal PyPI access — distinct from the
+  sandbox shims ADR-021 introduced for this dev environment specifically. No HTTP
+  API/app server exists yet (Open Question #10), so there's no conventional
+  "run the app" target to build toward; the Dockerfile/Makefile are scoped to what
+  actually exists: building the image, running the test suite (real deps, in
+  Docker, or stdlib-only on the host), and a smoke check.
+- **Decision:**
+  - `Dockerfile`: multi-stage build (`builder` installs `requirements.txt` into an
+    isolated prefix; `runtime` is a lean `python:3.11-slim` image, non-root
+    `appuser`, `PYTHONPATH=/app`). `scripts/entrypoint.sh` dispatches on the first
+    arg: `smoke` (default — imports the package, builds the graph, exercises the
+    gateway-config check and guardrail stub), `test` (execs `pytest`), `shell`/
+    `bash`, or anything else exec'd as-is (reserved for a future `uvicorn ...`).
+  - `infra/docker-compose.yml` gains an `app` service: builds from the root
+    `Dockerfile`, bind-mounts the repo, depends on `postgres`/`redis`/`litellm`.
+    It is **not** a long-running container — `docker compose run --rm app <mode>`
+    starts it fresh per invocation, since there's no server process to keep alive.
+  - `Makefile` at the repo root provides two parallel test paths: `make test` (full
+    suite, real deps, inside Docker) and `make test-local` (the same test files,
+    run via stdlib `unittest` directly on the host — what this sandbox's Feature 01
+    work actually used, no Docker or network required). Also: `build`, `up`/`down`/
+    `clean` (infra lifecycle), `smoke`, `shell`, `shell-db`, `logs`, `lint` (runs
+    `scripts/lint_gateway_usage.sh`), `help`.
+- **Consequences:** `make test` will only pass once it's run somewhere with real
+  PyPI access — it cannot be verified inside this sandbox (no Docker daemon here
+  either; confirmed via `docker version` → command not found). What *was* verified
+  in-sandbox: `make help`, `make lint`, and `make test-local` all run correctly
+  (14/14 tests), and the compose file parses as valid YAML with the expected
+  service/volume shape. `make build`/`make test`/`make smoke` were dry-run via
+  `make -n` to confirm the exact commands they'd issue, and `make build` was run
+  far enough to confirm it fails for the expected reason (`docker-compose: No such
+  file or directory` — no Docker in this sandbox), not from a Makefile defect.
+- **Status:** Accepted.
+
+---
+
 ## 3. Production RAG Blueprint
 
 ### Pillar 1 — Advanced RAG Mechanics
@@ -788,7 +827,7 @@ guardrail_output -(safe, post-execution)-> END
 
 | Feature ID | Description | Phase Introduced | Status | PMA Sections Touched |
 |---|---|---|---|---|
-| `feature-01-infra-bootstrap` | docker-compose infra, `client_factory.py`, `guardrail_check()` stub, `IncidentState` schema, empty entry→END graph; implemented against stdlib shims (ADR-021) for `langgraph`/`langchain-openai`/`pytest` due to sandbox PyPI block; 14/14 tests passing via `python3 -m unittest` | Phase 4 | **Done** | ADR-007 (new), ADR-021 (new), §3 Pillar 3, §3 Pillar 5, §7 (new Open Question #15), §9 item 1 |
+| `feature-01-infra-bootstrap` | docker-compose infra, `client_factory.py`, `guardrail_check()` stub, `IncidentState` schema, empty entry→END graph; implemented against stdlib shims (ADR-021) for `langgraph`/`langchain-openai`/`pytest` due to sandbox PyPI block; 14/14 tests passing via `python3 -m unittest`; root `Dockerfile`/`Makefile` + compose `app` service added (ADR-022) for running the real-dependency stack outside this sandbox | Phase 4 | **Done** | ADR-007 (new), ADR-021 (new), ADR-022 (new), §3 Pillar 3, §3 Pillar 5, §7 (new Open Question #15), §9 item 1 |
 | `feature-02-eval-harness` | `evals/golden_incidents.jsonl`, `evals/judge_prompt.md`, ragas + LangSmith evaluator wiring, `make eval` CI job | Phase 4 | In Progress | ADR-008 (new), §3 Pillar 4, §9 item 2 |
 | `feature-03-guardrail-input-node` | `guardrail_input` node + new `reject` node; corrects §5.2 to include the rejection branch | Phase 4 | In Progress | ADR-009 (new, retrofit), §5.1, §5.2, §3 Pillar 3, §9 item 3 |
 | `feature-04-ingestion-router-node` | Corpus ingestion into pgvector + `router` node; corrects Pillar 1 prose to single-corpus routing | Phase 4 | In Progress | ADR-010 (new, retrofit), §3 Pillar 1, §9 item 4 |
