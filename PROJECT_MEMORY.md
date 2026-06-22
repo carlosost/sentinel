@@ -828,7 +828,7 @@ guardrail_output -(safe, post-execution)-> END
 | Feature ID | Description | Phase Introduced | Status | PMA Sections Touched |
 |---|---|---|---|---|
 | `feature-01-infra-bootstrap` | docker-compose infra, `client_factory.py`, `guardrail_check()` stub, `IncidentState` schema, empty entry→END graph; implemented against stdlib shims (ADR-021) for `langgraph`/`langchain-openai`/`pytest` due to sandbox PyPI block; 14/14 tests passing via `python3 -m unittest`; root `Dockerfile`/`Makefile` + compose `app` service added (ADR-022) for running the real-dependency stack outside this sandbox | Phase 4 | **Done** | ADR-007 (new), ADR-021 (new), ADR-022 (new), §3 Pillar 3, §3 Pillar 5, §7 (new Open Question #15), §9 item 1 |
-| `feature-02-eval-harness` | `evals/golden_incidents.jsonl`, `evals/judge_prompt.md`, ragas + LangSmith evaluator wiring, `make eval` CI job | Phase 4 | In Progress | ADR-008 (new), §3 Pillar 4, §9 item 2 |
+| `feature-02-eval-harness` | `evals/golden_incidents.jsonl` (21 incidents), `evals/judge_prompt.md`, `src/evals/{dataset,judge_prompt,evaluator,langsmith_registry}.py`, `scripts/run_eval.py`, `make eval`; LangSmith registry implemented against a stdlib shim (ADR-021) since the sandbox has no PyPI egress for the real `langsmith` package; ragas wiring deferred — no real retriever/diagnosis exists yet to score (Pillar Impact caveat); 28/28 tests passing via `python3 -m unittest` (14 carried over from Feature 01 + 14 new) | Phase 4 | **Done** | ADR-008, ADR-021, §3 Pillar 4, §7 (Open Question #15 addendum), §9 item 2 |
 | `feature-03-guardrail-input-node` | `guardrail_input` node + new `reject` node; corrects §5.2 to include the rejection branch | Phase 4 | In Progress | ADR-009 (new, retrofit), §5.1, §5.2, §3 Pillar 3, §9 item 3 |
 | `feature-04-ingestion-router-node` | Corpus ingestion into pgvector + `router` node; corrects Pillar 1 prose to single-corpus routing | Phase 4 | In Progress | ADR-010 (new, retrofit), §3 Pillar 1, §9 item 4 |
 | `feature-05-retriever-reranker-nodes` | `retriever` (pgvector top-k=20) + `reranker` (bge-reranker-base top-k=5) nodes; pins document dict shape | Phase 4 | In Progress | ADR-011 (new), §3 Pillar 1, §3 Pillar 4, §9 item 5 |
@@ -927,6 +927,13 @@ guardrail_output -(safe, post-execution)-> END
     `pip install -r requirements.txt`), and (d) confirm no behavior gap — especially
     for Features 04/06/09, which need branching/cycles/interrupts the `_compat.py`
     shim cannot represent at all.
+    **Addendum (Feature 02):** the same constraint forced a stdlib stand-in for the
+    real `langsmith` package's evaluator registry —
+    `src/evals/langsmith_registry.py`. Swap it for `langsmith.Client()` under the
+    same retrofit pass; it has no branching/cycle limitations like `_compat.py`
+    (it's a plain name→function map), so the swap should be mechanical, but it has
+    never been exercised against the real LangSmith API/schema and that must be
+    verified, not assumed.
 
 ---
 
@@ -1122,10 +1129,15 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
       against stdlib shims per ADR-021 (sandbox has no PyPI egress); 14/14 tests
       pass via `python3 -m unittest discover -s tests`. Open Question #15 tracks
       swapping the shims for real `langgraph`/`langchain-openai`/`pytest`.
-- [ ] 2. Build the eval harness: author `evals/golden_incidents.jsonl` (20+ synthetic
+- [x] 2. Build the eval harness: author `evals/golden_incidents.jsonl` (20+ synthetic
       incidents with reference root cause, reference remediation, and pass/fail
       rubric), write `evals/judge_prompt.md`, and wire ragas (`context_precision`,
       `context_recall`, `faithfulness`) plus a LangSmith custom evaluator into CI.
+      **Done** — 21 golden incidents; `sentinel_remediation_judge` registered
+      against a stdlib LangSmith-registry shim (ADR-021 addendum); `make eval` CI
+      job; ragas wiring deferred (no retriever/diagnosis to score yet, by design —
+      see Feature 02's Pillar Impact caveat); 28/28 tests pass via
+      `python3 -m unittest discover -s tests`.
 - [ ] 3. Add the `guardrail_input` node: on graph entry, call `guardrail_check()` on
       the raw alert text and route to a `reject` node on an unsafe verdict, router
       otherwise.
