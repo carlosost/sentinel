@@ -1,0 +1,155 @@
+# ==============================================================================
+#  Sentinel — Autonomous SRE Incident Copilot — Developer Makefile
+#
+#  Status note: there is no long-running app/API container yet (Open Question
+#  #10, PROJECT_MEMORY.md §7) — that lands around roadmap items 9-10. Until
+#  then, `app` is a one-shot container: `make smoke`/`make test`/`make shell`
+#  each run it fresh via `docker compose run --rm`, not `docker exec` into an
+#  already-running process.
+#
+#  Two ways to run tests — pick based on what's available:
+#
+#    make test         Full suite, real deps, inside Docker (langgraph,
+#                       langchain-openai, pytest — via requirements.txt in the
+#                       image). Requires Docker.
+#    make test-local    Same test files, run with stdlib `unittest` directly on
+#                       the host — no Docker, no network required. This is how
+#                       Feature 01 was actually verified in a sandbox with no
+#                       PyPI egress (ADR-021); it exercises the stdlib shims in
+#                       src/gateway/client_factory.py and src/graph/_compat.py,
+#                       not the real langgraph/langchain-openai libraries.
+#
+#  Quick reference:
+#
+#    make build         Build the app image
+#    make up             Start Postgres + Redis + LiteLLM (infra only)
+#    make down           Stop infra containers (volumes preserved)
+#    make clean           Stop infra AND wipe all Docker volumes
+#    make smoke           One-shot smoke check (graph builds, gateway/guardrail wired)
+#    make test             Full pytest suite inside Docker (real deps)
+#    make test-local        Deterministic-tier tests via stdlib unittest (no Docker)
+#    make lint               Run the ADR-006 gateway-usage lint script
+#    make shell               Interactive shell inside the app image
+#    make shell-db             psql session inside the postgres container
+#    make logs                  Tail infra service logs
+#    make help                   Print this help screen
+#
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Project-level constants
+# ------------------------------------------------------------------------------
+
+COMPOSE_FILE     := infra/docker-compose.yml
+
+# Compose command — supports both `docker compose` (v2) and legacy `docker-compose`
+COMPOSE          := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose") -f $(COMPOSE_FILE)
+
+DB_SERVICE       := postgres
+DB_CONTAINER     := $(shell basename $(CURDIR))-$(DB_SERVICE)-1
+POSTGRES_USER    := sentinel
+POSTGRES_DB      := sentinel
+
+# Colour codes for terminal output
+BOLD   := \033[1m
+GREEN  := \033[0;32m
+YELLOW := \033[0;33m
+CYAN   := \033[0;36m
+RESET  := \033[0m
+
+# ------------------------------------------------------------------------------
+# .PHONY — prevents make from confusing targets with files of the same name
+# ------------------------------------------------------------------------------
+.PHONY: \
+  build up down clean \
+  smoke test test-local lint \
+  shell shell-db logs \
+  help
+
+.DEFAULT_GOAL := help
+
+# ==============================================================================
+#  BUILD & INFRA LIFECYCLE
+# ==============================================================================
+
+## build        |  Build the app image
+build:
+	@printf "$(CYAN)$(BOLD)▶ Building app image...$(RESET)\n"
+	@$(COMPOSE) build app
+	@printf "$(GREEN)✓ Image built.$(RESET)\n"
+
+## up           |  Start Postgres, Redis, and the LiteLLM proxy (infra only)
+up:
+	@printf "$(CYAN)$(BOLD)▶ Starting infra (postgres, redis, litellm)...$(RESET)\n"
+	@$(COMPOSE) up --detach postgres redis litellm
+	@printf "$(GREEN)✓ Infra running. (No app/API server yet — see Open Question #10.)$(RESET)\n"
+
+## down         |  Stop containers (volumes preserved)
+down:
+	@printf "$(CYAN)$(BOLD)▶ Bringing down containers...$(RESET)\n"
+	@$(COMPOSE) down --remove-orphans
+	@printf "$(GREEN)✓ Containers removed.$(RESET)\n"
+
+## clean        |  Stop containers AND delete all Docker volumes (full wipe)
+clean:
+	@printf "$(YELLOW)$(BOLD)⚠ Wiping containers and volumes...$(RESET)\n"
+	@$(COMPOSE) down --volumes --remove-orphans
+	@printf "$(GREEN)✓ Volumes wiped.$(RESET)\n"
+
+# ==============================================================================
+#  RUNNING THE APP IMAGE (one-shot — see header note)
+# ==============================================================================
+
+## smoke        |  One-shot smoke check: graph builds, gateway/guardrail wired
+smoke:
+	@printf "$(CYAN)$(BOLD)▶ Running smoke check...$(RESET)\n"
+	@$(COMPOSE) run --rm app smoke
+
+## test         |  Full pytest suite inside Docker (real langgraph/langchain-openai/pytest)
+test:
+	@printf "$(CYAN)$(BOLD)▶ Running full test suite (Docker, real deps)...$(RESET)\n"
+	@$(COMPOSE) run --rm app test
+
+## shell        |  Interactive shell inside the app image
+shell:
+	@$(COMPOSE) run --rm app shell
+
+## shell-db     |  Open a psql session inside the postgres container
+shell-db:
+	@$(COMPOSE) exec $(DB_SERVICE) psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
+
+## logs         |  Tail infra service logs  (Ctrl-C to exit)
+logs:
+	@$(COMPOSE) logs --follow postgres redis litellm
+
+# ==============================================================================
+#  HOST-ONLY (NO DOCKER REQUIRED)
+# ==============================================================================
+
+## test-local   |  Deterministic-tier tests via stdlib unittest — no Docker, no network
+test-local:
+	@printf "$(CYAN)$(BOLD)▶ Running tests locally via stdlib unittest...$(RESET)\n"
+	@python3 -m unittest discover -s tests -v
+
+## lint         |  Run the ADR-006 gateway-usage lint script
+lint:
+	@printf "$(CYAN)$(BOLD)▶ Running gateway-usage lint...$(RESET)\n"
+	@bash scripts/lint_gateway_usage.sh
+
+# ==============================================================================
+#  HELP
+# ==============================================================================
+
+## help         |  Print available targets (default)
+help:
+	@printf "\n$(BOLD)Sentinel — Developer Makefile$(RESET)\n\n"
+	@printf "$(BOLD)Usage:$(RESET)  make <target>\n\n"
+	@printf "$(BOLD)Targets:$(RESET)\n"
+	@awk 'BEGIN { FS = "  \\|  " } \
+	      /^## /{ \
+	        target=$$1; sub(/^## /,"",target); \
+	        desc=$$2; \
+	        printf "  $(CYAN)%-14s$(RESET) %s\n", target, desc \
+	      }' $(MAKEFILE_LIST)
+	@printf "\n$(BOLD)Note:$(RESET) no HTTP API/app server exists yet (Open Question #10).\n"
+	@printf "  'app' is a one-shot container — make test/smoke/shell each start it fresh.\n\n"
