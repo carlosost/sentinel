@@ -20,6 +20,10 @@ class IncidentState(TypedDict):
     guardrail_input_verdict: Optional[dict]
     guardrail_output_verdict: Optional[dict]
 
+    # ADR-009 (Feature 03) — additive field. Set by the `reject` node from the
+    # triggering guardrail verdict's `reason`; only meaningful on a rejected run.
+    rejection_reason: Optional[str]
+
     # Pillar 1 (Advanced RAG) — populated by router/retriever/reranker/grade_documents
     # once those features land (roadmap items 4-6).
     route: Optional[Literal["runbooks", "postmortems", "infra_code_docs"]]

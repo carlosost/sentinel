@@ -829,7 +829,7 @@ guardrail_output -(safe, post-execution)-> END
 |---|---|---|---|---|
 | `feature-01-infra-bootstrap` | docker-compose infra, `client_factory.py`, `guardrail_check()` stub, `IncidentState` schema, empty entry→END graph; implemented against stdlib shims (ADR-021) for `langgraph`/`langchain-openai`/`pytest` due to sandbox PyPI block; 14/14 tests passing via `python3 -m unittest`; root `Dockerfile`/`Makefile` + compose `app` service added (ADR-022) for running the real-dependency stack outside this sandbox | Phase 4 | **Done** | ADR-007 (new), ADR-021 (new), ADR-022 (new), §3 Pillar 3, §3 Pillar 5, §7 (new Open Question #15), §9 item 1 |
 | `feature-02-eval-harness` | `evals/golden_incidents.jsonl` (21 incidents), `evals/judge_prompt.md`, `src/evals/{dataset,judge_prompt,evaluator,langsmith_registry}.py`, `scripts/run_eval.py`, `make eval`; LangSmith registry implemented against a stdlib shim (ADR-021) since the sandbox has no PyPI egress for the real `langsmith` package; ragas wiring deferred — no real retriever/diagnosis exists yet to score (Pillar Impact caveat); 28/28 tests passing via `python3 -m unittest` (14 carried over from Feature 01 + 14 new) | Phase 4 | **Done** | ADR-008, ADR-021, §3 Pillar 4, §7 (Open Question #15 addendum), §9 item 2 |
-| `feature-03-guardrail-input-node` | `guardrail_input` node + new `reject` node; corrects §5.2 to include the rejection branch | Phase 4 | In Progress | ADR-009 (new, retrofit), §5.1, §5.2, §3 Pillar 3, §9 item 3 |
+| `feature-03-guardrail-input-node` | `guardrail_input`/`reject` nodes (`src/graph/nodes/`); corrects §5.2 to include the rejection branch; `src/graph/_compat.py` gained `add_conditional_edges` (ADR-021 addendum — the shim only supported linear chains before this, but Feature 03 needs real branching) so `guardrail_input -(safe)-> router`, `-(unsafe)-> reject` compiles for real; `router` is a placeholder node (`_router_placeholder` in build.py) until Feature 04; 39/39 tests passing via `python3 -m unittest` | Phase 4 | **Done** | ADR-009, ADR-021 (addendum), §5.1, §5.2, §3 Pillar 3, §9 item 3 |
 | `feature-04-ingestion-router-node` | Corpus ingestion into pgvector + `router` node; corrects Pillar 1 prose to single-corpus routing | Phase 4 | In Progress | ADR-010 (new, retrofit), §3 Pillar 1, §9 item 4 |
 | `feature-05-retriever-reranker-nodes` | `retriever` (pgvector top-k=20) + `reranker` (bge-reranker-base top-k=5) nodes; pins document dict shape | Phase 4 | In Progress | ADR-011 (new), §3 Pillar 1, §3 Pillar 4, §9 item 5 |
 | `feature-06-grade-documents-self-rag` | `grade_documents` node + self-RAG retry loop; adds `current_query` field and retry-exhaustion behavior | Phase 4 | In Progress | ADR-012 (new), §5.1, §3 Pillar 1, §9 item 6 |
@@ -934,6 +934,15 @@ guardrail_output -(safe, post-execution)-> END
     (it's a plain name→function map), so the swap should be mechanical, but it has
     never been exercised against the real LangSmith API/schema and that must be
     verified, not assumed.
+    **Addendum (Feature 03):** `_compat.py` gained `add_conditional_edges(source,
+    path, path_map)` — real branching, not just the linear chain ADR-021
+    originally described. It mirrors real langgraph's own API shape (branching is
+    modeled the same way there too), so this should *not* need rework when the
+    shim is swapped for the real package — but, like every other ADR-021 shim, it
+    has never been run against real `langgraph` and that must be verified, not
+    assumed. Cycles are still unsupported (`compile()` does a static DFS across
+    every conditional branch and raises on any revisit) — still blocking for
+    Feature 06's self-RAG retry loop.
 
 ---
 
@@ -1138,9 +1147,12 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
       job; ragas wiring deferred (no retriever/diagnosis to score yet, by design —
       see Feature 02's Pillar Impact caveat); 28/28 tests pass via
       `python3 -m unittest discover -s tests`.
-- [ ] 3. Add the `guardrail_input` node: on graph entry, call `guardrail_check()` on
+- [x] 3. Add the `guardrail_input` node: on graph entry, call `guardrail_check()` on
       the raw alert text and route to a `reject` node on an unsafe verdict, router
-      otherwise.
+      otherwise. **Done** — `src/graph/nodes/{guardrail_input,reject}.py`;
+      `_compat.py` gained `add_conditional_edges` (ADR-021 addendum) to support the
+      real branch; `router` is a placeholder pending roadmap item 4; 39/39 tests
+      pass via `python3 -m unittest discover -s tests`.
 - [ ] 4. Ingest runbooks, postmortems, and infra/code docs into pgvector, then add the
       `router` node that classifies the incoming query against those three corpora
       and selects a retriever.

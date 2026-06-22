@@ -1,8 +1,8 @@
 # Feature 03 — `guardrail_input` Node
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
-**PMA sections touched:** ADR-009 (new, retrofit), §5.1 (new field), §5.2 (corrected),
+**Status:** Done — implemented and tested (against sandbox shims; see Implementation Status below).
+**PMA sections touched:** ADR-009, ADR-021 (addendum), §5.1 (new field), §5.2 (corrected),
 §3 Pillar 3, §6 Feature Log, §9 item 3
 
 ## Feature Description
@@ -142,3 +142,72 @@ def test_graph_runs_guardrail_input_then_router_on_safe_verdict(mock_guardrail_c
     Feature 01's entry->END smoke test now that a real node exists."""
     ...
 ```
+
+## Implementation Status (real code/tests, sandbox-constrained)
+
+Implemented:
+- `src/graph/nodes/guardrail_input.py` — `guardrail_input(state)` calls
+  `guardrail_check(raw_alert, direction="input")` and records the verdict;
+  `guardrail_input_route(state)` is the separate path function (returns
+  `"safe"`/`"unsafe"`, exported as `ROUTE_SAFE`/`ROUTE_UNSAFE`) passed to
+  `add_conditional_edges` in `build.py` — node logic and routing logic are split,
+  matching real LangGraph's own node/path-function convention.
+- `src/graph/nodes/reject.py` — `reject(state)` reads
+  `guardrail_input_verdict`/`guardrail_output_verdict` (falls back to the latter
+  for when Feature 08 wires its own rejection branch per Open Question #6) and
+  records `rejection_reason`; routes to `END` via a static edge.
+- `src/graph/state.py` — `rejection_reason: Optional[str]` added additively, per
+  ADR-009.
+- `src/graph/build.py` — rewritten: `guardrail_input` is now the real entry node
+  (`START -> guardrail_input`), with `add_conditional_edges("guardrail_input",
+  guardrail_input_route, {"safe": "router", "unsafe": "reject"})`. `router` is a
+  placeholder (`_router_placeholder`, routes straight to `END`) until Feature 04 —
+  the same "placeholder until the next feature lands" pattern Feature 01 used for
+  `_entry`.
+- **`src/graph/_compat.py` extended (ADR-021 addendum, not a new ADR):** this
+  feature is the first to need real branching, which the shim explicitly didn't
+  support before now. Added `StateGraph.add_conditional_edges(source, path,
+  path_map)` — a separate API from `add_edge`, mirroring real langgraph's actual
+  branching model (real langgraph doesn't do multi-target `add_edge` either).
+  `compile()` now does a static DFS from `START` across every conditional branch
+  (not just one path) to detect cycles ahead of time; `add_edge` still rejects a
+  second outgoing edge from the same source, and a node can't mix one static edge
+  with one conditional-edges call. Cycles remain unsupported — still blocking for
+  Feature 06.
+- Tests: `tests/graph/nodes/test_guardrail_input.py`,
+  `tests/graph/nodes/test_reject.py`, `tests/graph/test_skeleton.py` (new); 6 new
+  cases added to `tests/graph/test_compat.py` covering
+  `add_conditional_edges` (correct branch routing, direct-to-`END` targets,
+  compile-time cycle detection through a conditional branch, runtime error on an
+  unknown path-function return value, and the static/conditional mutual-exclusion
+  rule).
+
+Deviations from the original skeleton:
+- `tests/graph/test_build.py`'s Feature 01 placeholder test
+  (`test_empty_graph_passes_through_to_end`) was deleted, not retrofitted, per
+  this feature's own Blast Radius note — `tests/graph/test_skeleton.py` replaces
+  it with two cases (safe-routes-through, unsafe-routes-to-reject) instead of the
+  skeleton's single named case, since both branches needed direct coverage.
+  `test_build.py` now only asserts the graph compiles.
+- The node-level `guardrail_input` tests assert `guardrail_input_route(state)`
+  returns the path-function key (`"safe"`/`"unsafe"`), not the final node name
+  (`"router"`/`"reject"`) — that translation is `build.py`'s `path_map`, not the
+  node module's concern. The Gherkin's "next edge target is 'router'" is verified
+  end-to-end instead, in `test_skeleton.py`.
+- All tests are `unittest`, not `pytest`, continuing Feature 01's ADR-021
+  fallback.
+
+Verification performed in-sandbox: `bash scripts/lint_gateway_usage.sh` passes;
+`python3 -m unittest discover -s tests -v` → 39/39 passing (28 carried over from
+Features 01-02 + 11 new); `bash scripts/entrypoint.sh smoke` still passes (the
+smoke check's hardcoded state dict has no `rejection_reason` key, which is fine —
+`reject()` and the smoke path don't require it, and `IncidentState` is a
+`TypedDict`, not runtime-enforced).
+
+Definition of Done — checked against §8.5:
+- [x] Spec (this file) exists and was conflict-checked against prior ADRs.
+- [x] Gherkin scenarios map 1:1 to implemented unittest cases.
+- [x] Tests pass deterministically, no live network/API keys required.
+- [x] PROJECT_MEMORY.md and this file updated in the same pass as the code.
+- [ ] Real-package parity (Open Question #15, now also covering `_compat.py`'s
+      `add_conditional_edges`) — not yet verified against real `langgraph`.
