@@ -29,6 +29,7 @@
 #    make test             Full pytest suite inside Docker (real deps)
 #    make test-local        Deterministic-tier tests via stdlib unittest (no Docker)
 #    make lint               Run the ADR-006 gateway-usage lint script
+#    make eval               Run the eval harness (Probabilistic Tier, ADR-008)
 #    make shell               Interactive shell inside the app image
 #    make shell-db             psql session inside the postgres container
 #    make logs                  Tail infra service logs
@@ -62,7 +63,7 @@ RESET  := \033[0m
 # ------------------------------------------------------------------------------
 .PHONY: \
   build up down clean \
-  smoke test test-local lint \
+  smoke test test-local lint eval \
   shell shell-db logs \
   help
 
@@ -135,6 +136,11 @@ test-local:
 lint:
 	@printf "$(CYAN)$(BOLD)▶ Running gateway-usage lint...$(RESET)\n"
 	@bash scripts/lint_gateway_usage.sh
+
+## eval         |  Run the eval harness (Probabilistic Tier, reported separately from tests)
+eval:
+	@printf "$(CYAN)$(BOLD)▶ Running eval harness...$(RESET)\n"
+	@python3 scripts/run_eval.py
 
 # ==============================================================================
 #  HELP

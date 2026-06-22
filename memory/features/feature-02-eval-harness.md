@@ -1,8 +1,8 @@
 # Feature 02 — Eval Harness
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending; no baseline score recorded yet — see note below)
-**PMA sections touched:** ADR-008 (new), §3 Pillar 4, §6 Feature Log, §9 item 2
+**Status:** Done — implemented and tested (against sandbox shims for the LangSmith registry; see Implementation Status below). No quality baseline yet — see Pillar Impact caveat below; that remains accurate.
+**PMA sections touched:** ADR-008, ADR-021, §3 Pillar 4, §6 Feature Log, §7 (Open Question #15 addendum), §9 item 2
 
 ## Feature Description
 
@@ -176,3 +176,69 @@ def test_judge_evaluator_uses_client_factory(mocked_client_factory):
 ## Blast Radius
 
 Additive — no existing ADR superseded, no existing test/spec files broken.
+
+## Implementation Status (real code/tests, sandbox-constrained)
+
+Implemented:
+- `evals/golden_incidents.jsonl` — 21 synthetic incidents (exceeds the 20+ bar),
+  each with `incident_id`/`alert_text`/`reference_root_cause`/
+  `reference_remediation`/`rubric`/`reference_docs` per ADR-008's schema.
+- `evals/judge_prompt.md` — template with `{{alert_text}}`, `{{reference_root_cause}}`,
+  `{{reference_remediation}}`, `{{proposed_diagnosis}}`, `{{proposed_action}}`,
+  `{{QUESTIONS}}`, `{{JSON_SCHEMA}}` tokens.
+- `src/evals/dataset.py` — `load_golden_dataset()`, raises `GoldenDatasetError` on
+  malformed JSON, missing fields, empty rubric, or duplicate `incident_id`.
+- `src/evals/judge_prompt.py` — `render_judge_prompt()`, generates one numbered
+  yes/no question per rubric criterion and a JSON schema block with exactly those
+  criteria as boolean keys. Stdlib string substitution, no Jinja2.
+- `src/evals/langsmith_registry.py` — **stdlib shim** standing in for the real
+  `langsmith` package (no PyPI egress in this sandbox — same root cause as
+  ADR-021). A plain name→function registry (`register_evaluator`,
+  `list_evaluators`, `get_evaluator`). Documented as an addendum to ADR-021 /
+  Open Question #15 rather than a new ADR, since ADR-021 already anticipated
+  "subsequent features" needing the same treatment.
+- `src/evals/evaluator.py` — `run_judge()` builds the prompt, calls
+  `client_factory.get_chat_client(model="sentinel-judge")` (never a direct
+  provider SDK — enforced by both the lint script and
+  `tests/evals/test_gateway_compliance.py`), parses the judge's JSON response,
+  and aggregates pass/fail in Python (all criteria `True`) — never delegated to
+  the LLM, per ADR-008. Registers itself as `sentinel_remediation_judge` at
+  import time.
+- `scripts/run_eval.py` + `make eval` — runs harness mechanics (dataset load,
+  prompt render, evaluator registration check) and prints an explicit
+  "no quality baseline yet" notice, consistent with the Pillar Impact caveat
+  below. This is intentionally not a pytest/unittest target — ADR-008's CI
+  separation decision keeps it a distinct, separately-reported job.
+- Tests: `tests/evals/test_golden_dataset_schema.py`,
+  `test_judge_prompt_rendering.py`, `test_evaluator_registration.py`,
+  `test_gateway_compliance.py` — all Deterministic Tier, all passing.
+
+Deviations from the original skeleton:
+- The PyTest skeletons in this file were translated to stdlib `unittest`
+  (`ClientFactoryTests`-style classes), consistent with Feature 01's ADR-021
+  fallback — this sandbox has no `pytest` installed and no PyPI egress to get it.
+- `test_evaluator_registration.py`'s "mocked_langsmith_client" fixture from the
+  skeleton is, concretely, the `langsmith_registry.registry` singleton itself —
+  there's no real LangSmith client to mock against yet.
+- Two extra dataset tests beyond the skeleton (`test_rejects_a_record_missing_a_required_field`,
+  `test_rejects_duplicate_ids_in_a_synthetic_fixture`) were added to exercise
+  `GoldenDatasetError`'s failure paths via synthetic `tempfile` fixtures, not just
+  the happy path against the real dataset file — same fixture-isolation discipline
+  established in Feature 01's lint test rewrite (never write/delete inside the
+  mounted workspace).
+
+Verification performed in-sandbox: `bash scripts/lint_gateway_usage.sh` passes;
+`python3 -m unittest discover -s tests -v` → 28/28 passing (14 from Feature 01 +
+14 new); `python3 scripts/run_eval.py` and `make eval` both run cleanly and report
+"Eval harness mechanics: PASS" with the no-baseline notice; `make test-local`
+also confirmed via the Makefile wrapper.
+
+Definition of Done — checked against §8.5, with the standing caveat that
+"real, passing tests" means real `unittest` against real project code, not yet
+against the real `langsmith` package (Open Question #15 addendum):
+- [x] Spec (this file) exists and was conflict-checked against prior ADRs.
+- [x] Gherkin scenarios map 1:1 to implemented PyTest/unittest skeletons.
+- [x] Tests pass deterministically, no live network/API keys required.
+- [ ] Probabilistic Tier / quality baseline — not applicable to this feature per
+      the Pillar Impact caveat; first real baseline lands at roadmap item 4+.
+- [x] PROJECT_MEMORY.md and this file updated in the same pass as the code.
