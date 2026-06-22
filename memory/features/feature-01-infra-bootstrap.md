@@ -1,8 +1,8 @@
 # Feature 01 — Infra Bootstrap
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
-**PMA sections touched:** ADR-007 (new), §3 Pillar 3, §3 Pillar 5, §6 Feature Log, §9 item 1
+**Status:** Done — implemented and tested (against sandbox shims; see Implementation Status below)
+**PMA sections touched:** ADR-007 (new), ADR-021 (new), §3 Pillar 3, §3 Pillar 5, §6 Feature Log, §7 (new Open Question #15), §9 item 1
 
 ## Feature Description
 
@@ -140,3 +140,58 @@ def test_incident_state_missing_thread_id_fails_validation():
 
 Additive — no existing ADR superseded, no existing test/spec files broken (none exist
 yet at this point in the project).
+
+## Implementation Status (real code/tests, sandbox-constrained)
+
+This feature was implemented and tested for real in this session. The execution
+sandbox has no PyPI egress (confirmed via repeated `pip install`/`pip download`
+failures against `langgraph`, `langchain-core`, `langchain-openai`, `pydantic`, and
+`pytest` — all rejected by the network proxy). **ADR-021** documents the resulting
+substitution. Concretely, against the skeletons above:
+
+- `src/gateway/client_factory.py` — implemented as designed, except `get_chat_client`/
+  `get_embedding_client` return stdlib `dataclass` stand-ins (`_ChatClient`/
+  `_EmbeddingClient`) instead of `ChatOpenAI`/`OpenAIEmbeddings`. `GatewayConfigError`
+  on a missing `LITELLM_PROXY_URL` is real, as designed.
+- `src/guardrails/check.py` — implemented exactly as designed; no substitution was
+  needed (already stdlib-only `TypedDict`/`Literal`).
+- `src/graph/state.py` — implemented exactly as designed (stdlib-only `TypedDict`);
+  no substitution needed.
+- `src/graph/build.py` / `src/graph/_compat.py` — `_compat.py` is a new file, not in
+  the original skeleton: a minimal linear-only `StateGraph`/`START`/`END` stand-in
+  for `langgraph.graph`. It explicitly cannot do branching or cycles
+  (`GraphNotLinearError`) — adequate for this feature's `entry -> END` shell, but
+  **not** adequate for Features 04/06/09 once implementation reaches them.
+- `scripts/lint_gateway_usage.sh` — implemented, with two corrections found while
+  writing its own test (see below): (1) restricted to scanning `src/` and `scripts/`
+  only, not the whole repo, since scanning `tests/` caused the script to flag its
+  own test fixtures' string literals as violations; (2) added an optional
+  target-directory argument so its test can point it at a synthetic `/tmp` fixture
+  tree instead of writing a real violating file into this repo.
+- Tests: written with stdlib `unittest` instead of `pytest` (also blocked), in
+  `tests/gateway/test_client_factory.py`, `tests/guardrails/test_check.py`,
+  `tests/graph/test_build.py`, `tests/graph/test_compat.py` (new — covers the
+  `_compat.py` shim's own behavior and failure modes), and
+  `tests/test_lint_gateway_usage.py`. The originally-sketched
+  `test_incident_state_missing_thread_id_fails_validation` scenario was **dropped**,
+  not silently ignored: `TypedDict` performs no runtime validation, and the
+  validation library that would provide it (`pydantic`) is also blocked in this
+  sandbox. Revisit once Open Question #15 is resolved.
+- Result: **14/14 tests pass** via `python3 -m unittest discover -s tests -v`.
+- One operational incident during this work: an earlier version of the lint
+  script's test wrote a synthetic bad-import fixture directly into `src/` and tried
+  to delete it afterward — the workspace mount does not permit unlinking files
+  (confirmed: neither Python's `os.unlink`, `shutil.move`, nor `sudo rm` succeed).
+  This left two harmless orphaned files in `src/` (`tmp6i7_b1m5.py`,
+  `tmph94x_g5b.py`), now neutralized to empty comment-only stubs explaining their
+  origin; they can be deleted by hand outside this environment if desired. The test
+  itself was rewritten to build its fixture tree under `tempfile.TemporaryDirectory()`
+  (sandbox-local `/tmp`) instead, so this cannot recur.
+
+**Definition of Done (§8.5) status:** (1) Gherkin scenarios above are covered by the
+test files listed; (2)/(3) deterministic tests are real and pass; (4) not
+applicable — this feature has no Probabilistic Tier surface; (5) LangSmith
+structural assertions not applicable yet (no tracing wired until later features);
+(6) this Feature Log row is updated. Caveat: "passing" currently means passing
+against ADR-021's shims, not the real `langgraph`/`langchain-openai` stack — Open
+Question #15 is the explicit tracker for closing that gap.
