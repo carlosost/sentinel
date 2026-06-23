@@ -10,10 +10,10 @@ positions are told apart by checking `state["execution_result"]` rather than
 by graph position, since `execution_result` is unset pre-execution and set
 post-execution (ADR-014's own framing).
 
-Still calls the Feature 01 stub `guardrail_check` (moderation accuracy is
-roadmap item 13/ADR-019) — this feature wires the real call site/routing
-contract around it, completing the retrofit ADR-009 deferred (Open Question
-#6).
+As of Feature 13 (ADR-019), `guardrail_check` makes a real Llama Guard 3-8B
+call through the gateway rather than the Feature 01 stub that always
+returned "safe" — this node's own routing contract is unchanged, since it
+only ever read `verdict["verdict"]`.
 
 Implementation note (not pinned by ADR-014's text, decided here): the
 moderated `text` differs by call site since there's no single field that

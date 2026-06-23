@@ -54,6 +54,7 @@ def _initial_state(raw_alert: str = "disk usage at 95% on db-primary") -> dict:
 
 
 class GraphSkeletonTests(unittest.TestCase):
+    @patch("src.graph.nodes.guardrail_output.guardrail_check")
     @patch("src.graph.nodes.write_postmortem.get_chat_client")
     @patch("src.tools.executors.get_staging_api_client")
     @patch("src.graph.nodes.propose_action.get_chat_client")
@@ -72,8 +73,10 @@ class GraphSkeletonTests(unittest.TestCase):
         mock_propose_action_chat_client,
         mock_get_staging_api_client,
         mock_postmortem_chat_client,
+        mock_output_check,
     ):
         mock_check.return_value = {"verdict": "safe", "reason": "stub"}
+        mock_output_check.return_value = {"verdict": "safe", "reason": "stub"}
         mock_staging_client = MagicMock()
         mock_staging_client.call.return_value = {"success": True, "output": "fetched logs"}
         mock_get_staging_api_client.return_value = mock_staging_client
@@ -145,6 +148,7 @@ class GraphSkeletonTests(unittest.TestCase):
         self.assertIsNotNone(result["postmortem_draft"])
         self.assertEqual(result["guardrail_output_verdict"]["verdict"], "safe")
 
+    @patch("src.graph.nodes.guardrail_output.guardrail_check")
     @patch("src.graph.nodes.propose_action.get_chat_client")
     @patch("src.graph.nodes.diagnose.get_chat_client")
     @patch("src.graph.nodes.grade_documents.get_chat_client")
@@ -159,6 +163,7 @@ class GraphSkeletonTests(unittest.TestCase):
         mock_grader_chat_client,
         mock_diagnose_chat_client,
         mock_propose_action_chat_client,
+        mock_output_check,
     ):
         """Proves the cycle Feature 06 added to `_compat.py` actually executes
         end-to-end: two low-relevance gradings retry back through router, a
@@ -166,6 +171,7 @@ class GraphSkeletonTests(unittest.TestCase):
         which honors the hedge requirement (ADR-013) by producing
         diagnosis_confidence='low'."""
         mock_check.return_value = {"verdict": "safe", "reason": "stub"}
+        mock_output_check.return_value = {"verdict": "safe", "reason": "stub"}
         mock_router_client = MagicMock()
         mock_router_client.invoke.return_value = json.dumps({"route": "runbooks"})
         mock_router_chat_client.return_value = mock_router_client
@@ -259,6 +265,7 @@ class GraphSkeletonTests(unittest.TestCase):
         self.assertEqual(result["guardrail_output_verdict"]["verdict"], "unsafe")
         self.assertEqual(result["rejection_reason"], "unsafe-remediation")
 
+    @patch("src.graph.nodes.guardrail_output.guardrail_check")
     @patch("src.graph.nodes.write_postmortem.get_chat_client")
     @patch("src.tools.executors.get_staging_api_client")
     @patch("src.graph.nodes.propose_action.get_chat_client")
@@ -277,6 +284,7 @@ class GraphSkeletonTests(unittest.TestCase):
         mock_propose_action_chat_client,
         mock_get_staging_api_client,
         mock_postmortem_chat_client,
+        mock_output_check,
     ):
         """Proves the safe + side_effecting branch (ADR-014) reaches the real
         `await_human_approval` node (Feature 09/ADR-015), which interrupts and
@@ -284,6 +292,7 @@ class GraphSkeletonTests(unittest.TestCase):
         HumanDecision (via update_state + invoke(None, ...)) routes onward to
         the real `execute` node (Feature 10/ADR-016), not back to diagnose."""
         mock_input_check.return_value = {"verdict": "safe", "reason": "stub"}
+        mock_output_check.return_value = {"verdict": "safe", "reason": "stub"}
         mock_staging_client = MagicMock()
         mock_staging_client.call.return_value = {"success": True, "output": "restarted"}
         mock_get_staging_api_client.return_value = mock_staging_client

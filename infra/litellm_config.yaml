@@ -5,9 +5,8 @@
 # client_factory.py passes these alias names straight through to the proxy — it
 # never sees or constructs a raw provider model string (ADR-003).
 #
-# `sentinel-guardrail` is reserved for roadmap item 13 (Feature 13's Llama Guard
-# unstubbing) — listed now so the config doesn't need a second retrofit just to
-# add an alias name; no node calls it yet.
+# `sentinel-guardrail` (Llama Guard 3-8B + a fallback safety model) backs
+# `guardrail_check()` as of Feature 13/ADR-019.
 
 model_list:
   - model_name: sentinel-router
@@ -66,7 +65,6 @@ model_list:
     litellm_params:
       model: cohere/embed-english-v3.0
 
-  # Reserved for Feature 13 (roadmap item 13) — not yet called by any node.
   - model_name: sentinel-guardrail
     litellm_params:
       model: together_ai/meta-llama/Meta-Llama-Guard-3-8B

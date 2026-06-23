@@ -1,7 +1,7 @@
 # Feature 13 — Guardrail Unstubbing (Real Llama Guard 3-8B Inference)
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
+**Status:** Done
 **PMA sections touched:** ADR-019 (new, retrofit), §5.1, §8.3 (correction), §3 Pillar
 3, §3 Pillar 4, §7 (resolves Open Question #1, new Open Question), §6 Feature Log, §9
 item 13
@@ -159,3 +159,79 @@ def test_guardrail_calls_do_not_set_no_cache(mock_client_factory):
 # Never asserted with `assert ==` — gated by threshold comparison, same pattern as
 # ragas/sentinel_remediation_judge (ADR-005/008).
 ```
+
+## Implementation Status
+
+**What was built:**
+- `src/guardrails/check.py` rewritten: `guardrail_check(text, direction)` now calls
+  `client_factory.get_chat_client(model="sentinel-guardrail")`, parses a strict-JSON
+  response, and returns the formalized `GuardrailVerdict` TypedDict
+  (`verdict`/`reason`/`category`). A new `GuardrailCheckError` is raised — never a
+  silent "safe" default — on non-JSON responses, an invalid `verdict`, a missing/empty
+  `reason`, or a `verdict`/`category` mismatch (safe must have `category=None`, unsafe
+  must have a non-empty category).
+- `infra/litellm_config.yaml`: removed the "reserved, not yet called" comments on the
+  `sentinel-guardrail` model alias (entries themselves pre-existed from Feature 12).
+- `src/graph/nodes/guardrail_input.py` / `guardrail_output.py`: docstrings updated to
+  describe real inference; no routing logic changed (both only ever read
+  `verdict["verdict"]`, confirmed by grep before editing).
+- New eval artifact `evals/guardrail_redteam.jsonl` (10 labeled examples, mixed
+  safe/unsafe and input/output) plus its loader/validator
+  (`src/evals/guardrail_dataset.py`, `GuardrailDatasetError`) and a confusion-matrix
+  precision/recall scorer (`src/evals/guardrail_eval.py`, `score_guardrail_dataset`).
+- `scripts/run_eval.py` extended to load/validate the red-team dataset as part of
+  `make eval`'s mechanics-only run, printing a status line and an explicit caveat that
+  moderation-accuracy scoring against a real model isn't possible in this sandbox
+  (no live LiteLLM proxy/PyPI egress — same constraint as Open Question #15).
+- New tests: `tests/guardrails/test_check.py` (7 tests, Deterministic Tier, gateway
+  call contract + verdict shape + cache-eligibility + error paths, `client_factory`
+  mocked throughout — never asserts a verdict is *correct*),
+  `tests/evals/test_guardrail_dataset_schema.py` (7 tests),
+  `tests/evals/test_guardrail_eval_scorer.py` (3 tests).
+
+**Deviations from spec:**
+- The spec's named skeleton file was `tests/guardrails/test_guardrail_check.py`; the
+  actual file is `tests/guardrails/test_check.py` (matching this repo's existing
+  `tests/<package>/test_<module>.py` naming convention, since the module is
+  `src/guardrails/check.py`). Same 3 named test cases plus 4 supplementary ones
+  (safe-has-null-category, unsafe-with-no-category-raises, invalid-verdict-raises,
+  non-JSON-response-raises) — broader coverage, no narrower.
+- `evals/run_guardrail_eval.py` (spec's named Probabilistic Tier entry point) was not
+  created as a separate script; instead `score_guardrail_dataset` was wired directly
+  into the existing `scripts/run_eval.py` (`make eval`'s single entry point), since a
+  second script would have duplicated dataset-path/CLI plumbing for no benefit. The
+  scorer function itself lives at `src/evals/guardrail_eval.py` exactly as specified.
+
+**Blast radius confirmed:** all 168 tests pass, including the existing graph-level
+integration tests (`tests/graph/test_skeleton.py`,
+`tests/graph/test_hitl_checkpoint_restart.py`) — those tests construct
+`guardrail_output_verdict` dicts that don't include a `category` key, which is fine
+since `category` is additive and nothing reads it yet. Three of those integration
+tests previously relied on the *old stub's* hardcoded "safe" return for the
+`guardrail_output` call site (they only ever patched `guardrail_input.guardrail_check`,
+not `guardrail_output.guardrail_check`); since `guardrail_output` now calls the same
+real `guardrail_check()` that requires a configured gateway, those three tests needed
+a new `@patch("src.graph.nodes.guardrail_output.guardrail_check")` added — a test-only
+fix, no production code or ADR decision changed.
+
+**New Open Question confirmed, not invented:** Open Question #13 in §7
+(guardrail moderation precision/recall thresholds are placeholders) was already
+pre-flagged in the PMA before this feature started, consistent with the Feature 11/12
+pattern — no new Open Question number was added.
+
+**Verification:**
+- `python -m unittest discover -s tests -p "test_*.py"` → 168/168 passing.
+- `bash scripts/lint_gateway_usage.sh` → PASS (no direct provider SDK usage).
+- `python scripts/run_eval.py` → PASS (golden dataset + guardrail red-team dataset
+  both schema-valid; harness mechanics only, no live-model baseline, as expected).
+
+**Definition of Done:**
+- [x] Spec's Conflict Check verified still holds (no re-derivation needed).
+- [x] Real-inference implementation matches ADR-019.
+- [x] Tests written and passing (Deterministic Tier for shape/contract; Probabilistic
+      Tier scorer exists and is unit-tested on its own arithmetic, ready for a live
+      model once sandbox constraints lift).
+- [x] Lint and eval harness both green.
+- [x] Feature file Status → Done, this section appended.
+- [x] PROJECT_MEMORY.md updated (ADR-019 implementation-status bullet, Feature Log
+      row, §9 checkbox, Open Question #1 resolution marker, ADR-004/§8.3 corrections).
