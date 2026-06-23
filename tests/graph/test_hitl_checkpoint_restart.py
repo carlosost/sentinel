@@ -93,6 +93,7 @@ class HitlCheckpointRestartTests(unittest.TestCase):
         self.assertEqual(paused_at, "await_human_approval")
         self.assertEqual(persisted_state["proposed_action"]["tool"], "restart_service")
 
+    @patch("src.graph.nodes.write_postmortem.get_chat_client")
     @patch("src.tools.executors.get_staging_api_client")
     @patch("src.graph.nodes.propose_action.get_chat_client")
     @patch("src.graph.nodes.diagnose.get_chat_client")
@@ -101,16 +102,27 @@ class HitlCheckpointRestartTests(unittest.TestCase):
     @patch("src.graph.nodes.router.get_chat_client")
     @patch("src.graph.nodes.guardrail_input.guardrail_check")
     def test_resume_after_simulated_process_restart_continues_correctly(
-        self, mock_check, *chat_mocks_and_staging
+        self, mock_check, *chat_mocks_and_staging_and_postmortem
     ):
         """Kills and reinstantiates the graph object against the same
         checkpointer instance, then resumes — the core HITL durability
         guarantee from §1's success criteria."""
-        *chat_mocks, mock_get_staging_api_client = chat_mocks_and_staging
+        mock_postmortem_chat_client = chat_mocks_and_staging_and_postmortem[-1]
+        mock_get_staging_api_client = chat_mocks_and_staging_and_postmortem[-2]
+        chat_mocks = chat_mocks_and_staging_and_postmortem[:-2]
         _mock_side_effecting_pipeline(mock_check, *chat_mocks)
         mock_staging_client = MagicMock()
         mock_staging_client.call.return_value = {"success": True, "output": "restarted"}
         mock_get_staging_api_client.return_value = mock_staging_client
+        mock_postmortem_client = MagicMock()
+        mock_postmortem_client.invoke.return_value = json.dumps(
+            {
+                "postmortem_draft": (
+                    "Summary\n...\nRoot Cause\n...\nAction Taken & Outcome\n...\nNotes\n..."
+                )
+            }
+        )
+        mock_postmortem_chat_client.return_value = mock_postmortem_client
         test_postgres_saver = InMemoryCheckpointSaver()
         config = {"configurable": {"thread_id": "restart-thread-1"}}
 
@@ -134,6 +146,8 @@ class HitlCheckpointRestartTests(unittest.TestCase):
         # execute (Feature 10) ran in the "second process" and succeeded.
         self.assertEqual(resumed["execution_result"]["success"], True)
         mock_staging_client.call.assert_called_once_with("restart_service", {})
+        # write_postmortem (Feature 11) ran in the "second process" too.
+        self.assertIsNotNone(resumed["postmortem_draft"])
         # Run reached END -> checkpoint cleared, not left dangling.
         self.assertFalse(test_postgres_saver.exists("restart-thread-1"))
 

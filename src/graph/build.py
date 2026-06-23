@@ -37,8 +37,13 @@ resolved action (ADR-015's `modified_action` precedence, via
 otherwise `proposed_action` unchanged for the read-only branch) to
 `src.tools.executors.execute_tool` against the mock staging API, then
 conditionally routes `-(success)-> write_postmortem`, `-(failure)->
-diagnose`. `write_postmortem` doesn't exist yet (roadmap item 11) —
-`_write_postmortem_placeholder` stands in for it. `build_graph()` now
+diagnose`. Feature 11 (ADR-017) replaces `_write_postmortem_placeholder`
+with the real `write_postmortem` node: it drafts a four-section postmortem
+(reusing `await_human_approval.resolve_action`'s ADR-015 precedence rule the
+same way `execute` does, for "which action was actually taken") and routes
+unconditionally to `guardrail_output` — the post-execution call site ADR-014
+already designed and `guardrail_output_route` already self-detects via
+`state.execution_result`. `build_graph()` now
 takes an optional `checkpointer` (see `src/graph/checkpoint.py`'s
 `InMemoryCheckpointSaver`, the sandbox stand-in for `PostgresSaver` per
 ADR-002/015); omitting it preserves every prior feature's behavior exactly
@@ -90,14 +95,8 @@ from src.graph.nodes.reject import reject
 from src.graph.nodes.reranker import reranker
 from src.graph.nodes.retriever import retriever
 from src.graph.nodes.router import router
+from src.graph.nodes.write_postmortem import write_postmortem
 from src.graph.state import IncidentState
-
-
-def _write_postmortem_placeholder(state: IncidentState) -> dict:
-    """Placeholder for the `write_postmortem` node (roadmap item 11 / Feature
-    11). Routes straight to END until the postmortem draft and the
-    post-execution `guardrail_output` call site exist."""
-    return {}
 
 
 def build_graph(checkpointer: Optional[object] = None) -> StateGraph:
@@ -122,7 +121,7 @@ def build_graph(checkpointer: Optional[object] = None) -> StateGraph:
     graph.add_node("guardrail_output", guardrail_output)
     graph.add_node("await_human_approval", await_human_approval)
     graph.add_node("execute", execute)
-    graph.add_node("write_postmortem", _write_postmortem_placeholder)
+    graph.add_node("write_postmortem", write_postmortem)
 
     graph.add_edge(START, "guardrail_input")
     graph.add_conditional_edges(
@@ -161,6 +160,6 @@ def build_graph(checkpointer: Optional[object] = None) -> StateGraph:
         execute_route,
         {ROUTE_SUCCESS: "write_postmortem", ROUTE_FAILURE: "diagnose"},
     )
-    graph.add_edge("write_postmortem", END)
+    graph.add_edge("write_postmortem", "guardrail_output")
 
     return graph.compile(checkpointer=checkpointer)
