@@ -637,6 +637,25 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   invocation. Open Question #15's scope grows to include swapping both for the
   real `langsmith` SDK and a real running `litellm` proxy, neither of which
   this shim pair has ever been run against.
+- **Addendum (Feature 13):** no new shim module — Feature 13 made
+  `client_factory.get_chat_client(model="sentinel-guardrail")` the real call
+  site for Llama Guard moderation, but `_ChatClient.invoke()` itself was
+  already, and remains, the same `NotImplementedError` stub this ADR
+  established for Feature 01. "Real Llama Guard 3-8B inference" describes the
+  *production code path* now being correct (no more hardcoded `"safe"`
+  shortcut bypassing the gateway), not a change in what this sandbox can
+  actually execute. Open Question #15's scope is unchanged by this feature.
+- **Addendum (Feature 14):** two further shims, both new modules.
+  `src/finetuning/langsmith_spans.py`'s `get_retriever_reranker_spans()`
+  stands in for a real `langsmith.Client()` trace-spans fetch (same need as
+  the Feature 02 addendum's evaluator registry, but for reading spans rather
+  than registering evaluators) — raises `NotImplementedError`. `src/embeddings/
+  finetuned_embeddings.py`'s `get_finetuned_embedding_model()` stands in for a
+  locally-loaded fine-tuned `sentence-transformers` model, mirroring the
+  Feature 05 addendum's `cross_encoder.py` shim exactly (same package,
+  same `.{predict,embed_documents}()`-raises-`NotImplementedError` shape).
+  Neither has been run against its real package. Open Question #15's scope
+  grows to include both.
 - **Status:** Accepted (provisional — superseded the moment real package access is
   available).
 

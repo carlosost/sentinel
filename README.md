@@ -2,9 +2,10 @@
 
 Sentinel is a learning project for building a production-grade LLM application from
 scratch with LangGraph, LangSmith, LangChain, and Advanced RAG — built under a strict
-Spec-Driven Development → BDD → TDD workflow. All 14 Phase 4 roadmap items are
-implemented and tested (190/190 tests passing); see `PROJECT_MEMORY.md` §10 for the
-project retrospective.
+Spec-Driven Development → BDD → TDD workflow. **All 14 Phase 4 roadmap items are
+implemented and tested** (190/190 tests passing). See §10 (Project Retrospective) of
+`PROJECT_MEMORY.md` for the full wrap-up, including what the sandbox this was built in
+could and couldn't verify.
 
 ## What it does
 
@@ -91,8 +92,11 @@ evals/
   golden_incidents.jsonl        # versioned eval set (reference root cause/remediation/rubric)
   judge_prompt.md               # LangSmith LLM-as-judge rubric prompt
   guardrail_redteam.jsonl       # labeled safe/unsafe examples for moderation accuracy
+  finetuning/                    # export_pairs.py, langsmith_spans.py, ab_eval.py
+  embeddings/                    # finetuned_embeddings.py (local fine-tuned model shim)
 scripts/
   ingest_corpora.py             # corpus -> pgvector ingestion
+  run_eval.py                   # eval harness mechanics + guardrail red-team dataset
   export_finetune_pairs.py      # LangSmith spans -> contrastive JSONL pairs
   finetune_embedding_model.py   # sentence-transformers contrastive fine-tune
   ab_eval_embedding_model.py    # base vs. fine-tuned promotion gate
