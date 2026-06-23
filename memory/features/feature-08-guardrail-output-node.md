@@ -1,7 +1,7 @@
 # Feature 08 — `guardrail_output` Node
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
+**Status:** Done
 **PMA sections touched:** ADR-014 (new, retrofit), §5.2, §3 Pillar 3, §7 (resolves
 Open Question #6), §6 Feature Log, §9 item 8
 
@@ -140,3 +140,83 @@ def test_safe_post_execution_routes_to_end(mock_guardrail_check):
     """Deterministic Tier."""
     ...
 ```
+
+## Implementation Status
+
+### Implemented
+
+- `src/graph/nodes/guardrail_output.py` (new): real `guardrail_output` node +
+  `guardrail_output_route` path function, replacing
+  `_guardrail_output_placeholder`. One function pair serves both call sites
+  per ADR-014, distinguishing pre-/post-execution by checking
+  `state["execution_result"]` rather than by graph position. Routes:
+  unsafe -> `reject`; safe + `execution_result` set -> `end` (post-execution);
+  safe + `execution_result` unset -> `await_human_approval` if
+  `proposed_action.side_effecting` else `execute` (pre-execution).
+- **Implementation decision (not pinned by ADR-014's text, decided here):**
+  what text gets moderated differs by call site, since no single field works
+  for both. Pre-execution renders `diagnosis` + `proposed_action`;
+  post-execution uses `postmortem_draft` once it exists (roadmap item 11).
+  Documented in the module docstring.
+- `src/graph/build.py`: `guardrail_output` is now the real node (was
+  `_guardrail_output_placeholder`); added `_await_human_approval_placeholder`
+  and `_execute_placeholder` (roadmap items 9–10) so the new conditional
+  edges out of `guardrail_output` have somewhere to route to; both new
+  placeholders edge straight to `END`.
+- `src/graph/nodes/reject.py`: docstring updated to drop the "once Feature 08
+  retrofits it" future tense (it's the present now).
+- **Bug found and fixed during this feature**: `reject`'s original logic
+  (`state.get("guardrail_input_verdict") or state.get("guardrail_output_verdict")`)
+  picked `guardrail_input_verdict` whenever it was set — including when it
+  was *safe* and a *later* `guardrail_output_verdict` was the one that was
+  actually unsafe. Since `guardrail_input` always sets its verdict before
+  `guardrail_output` ever runs, every run that reaches an unsafe output
+  verdict has a safe input verdict already sitting in state, so the old logic
+  reported the wrong (safe) verdict's `reason` ("stub" instead of the real
+  rejection reason) on every output-side rejection. Fixed to check each
+  verdict's own `verdict` field for `"unsafe"` rather than truthiness.
+  Caught by this feature's new full-graph integration test
+  (`test_graph_runs_full_path_unsafe_output_verdict_routes_to_reject`), not by
+  any pre-existing test — Feature 03 never had a case where both verdicts
+  could be set. A regression test was added directly to
+  `tests/graph/nodes/test_reject.py`
+  (`test_reject_node_uses_output_reason_when_input_was_safe`).
+
+### Deviations from the PyTest skeletons
+
+- Added tests beyond the skeletons: two tests asserting *what text* gets
+  moderated at each call site (diagnosis/proposed_action pre-execution,
+  postmortem_draft post-execution) — the skeleton only covered routing, not
+  the rendering decision this feature also had to make.
+- `tests/graph/test_skeleton.py`: extended both existing full-graph
+  integration tests with `guardrail_output_verdict`/`rejection_reason`
+  assertions, and added two new full-graph integration tests:
+  `test_graph_runs_full_path_unsafe_output_verdict_routes_to_reject` (proves
+  the bug above is actually fixed end-to-end, not just unit-tested) and
+  `test_graph_runs_full_path_side_effecting_action_reaches_await_human_approval`
+  (proves the safe + side-effecting branch reaches the new placeholder).
+
+### Verification
+
+- `python3 -m unittest discover -s tests` → **111/111 passing** (up from 101;
+  +9 in `test_guardrail_output.py`, +1 regression case in `test_reject.py`).
+- `bash scripts/lint_gateway_usage.sh` → passed.
+- `python3 scripts/run_eval.py` → passed (harness mechanics only).
+
+### Definition of Done
+
+- [x] ADR-014 (pre-drafted in PROJECT_MEMORY.md) re-verified against the
+      actual Feature 03-07 codebase and confirmed accurate — implemented as
+      specified.
+- [x] `guardrail_output` node + routing function implemented, reused at the
+      one currently-reachable call site (pre-execution); designed to also
+      serve the post-execution call site once `write_postmortem` exists.
+- [x] `_await_human_approval_placeholder`/`_execute_placeholder` added so the
+      new routes have valid targets.
+- [x] `reject`'s pre-existing verdict-selection bug found and fixed, with a
+      regression test.
+- [x] All Gherkin scenarios covered by passing tests, plus additional edge
+      cases.
+- [x] Full test suite, lint, and eval harness all pass.
+- [x] `PROJECT_MEMORY.md` updated (Feature Log, §9 item 8; Open Question #6
+      marked Resolved by ADR-014).

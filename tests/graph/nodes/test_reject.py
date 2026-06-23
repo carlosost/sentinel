@@ -28,6 +28,19 @@ class RejectNodeTests(unittest.TestCase):
         update = reject(state)
         self.assertEqual(update["rejection_reason"], "unknown")
 
+    def test_reject_node_uses_output_reason_when_input_was_safe(self):
+        """Regression case (Feature 08/ADR-014): a safe input verdict must
+        never shadow an unsafe output verdict's reason just because it was
+        set first/truthy — both can be set by the time `reject` runs, since
+        `guardrail_input` always sets its verdict before `guardrail_output`
+        ever runs."""
+        state = {
+            "guardrail_input_verdict": {"verdict": "safe", "reason": "stub"},
+            "guardrail_output_verdict": {"verdict": "unsafe", "reason": "unsafe-remediation"},
+        }
+        update = reject(state)
+        self.assertEqual(update["rejection_reason"], "unsafe-remediation")
+
 
 if __name__ == "__main__":
     unittest.main()
