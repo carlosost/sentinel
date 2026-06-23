@@ -831,7 +831,7 @@ guardrail_output -(safe, post-execution)-> END
 | `feature-02-eval-harness` | `evals/golden_incidents.jsonl` (21 incidents), `evals/judge_prompt.md`, `src/evals/{dataset,judge_prompt,evaluator,langsmith_registry}.py`, `scripts/run_eval.py`, `make eval`; LangSmith registry implemented against a stdlib shim (ADR-021) since the sandbox has no PyPI egress for the real `langsmith` package; ragas wiring deferred — no real retriever/diagnosis exists yet to score (Pillar Impact caveat); 28/28 tests passing via `python3 -m unittest` (14 carried over from Feature 01 + 14 new) | Phase 4 | **Done** | ADR-008, ADR-021, §3 Pillar 4, §7 (Open Question #15 addendum), §9 item 2 |
 | `feature-03-guardrail-input-node` | `guardrail_input`/`reject` nodes (`src/graph/nodes/`); corrects §5.2 to include the rejection branch; `src/graph/_compat.py` gained `add_conditional_edges` (ADR-021 addendum — the shim only supported linear chains before this, but Feature 03 needs real branching) so `guardrail_input -(safe)-> router`, `-(unsafe)-> reject` compiles for real; `router` is a placeholder node (`_router_placeholder` in build.py) until Feature 04; 39/39 tests passing via `python3 -m unittest` | Phase 4 | **Done** | ADR-009, ADR-021 (addendum), §5.1, §5.2, §3 Pillar 3, §9 item 3 |
 | `feature-04-ingestion-router-node` | `corpora/{runbooks,postmortems,infra_code_docs}/` (9 synthetic markdown files), `src/ingestion/document_store.py` (`InMemoryDocumentStore` — new stdlib stand-in for the pgvector `documents` table, ADR-021 addendum), `scripts/ingest_corpora.py` (+ `make ingest`), `src/graph/nodes/router.py` (real node replacing the Feature 03 placeholder; raises `RouterError` rather than defaulting on an invalid/missing classification); `build.py` now compiles `guardrail_input -(safe)-> router -> retriever(placeholder)`; corrects Pillar 1 prose to single-corpus routing; 54/54 tests passing via `python3 -m unittest` (54 = 39 carried over from Feature 03 + 15 new) | Phase 4 | **Done** | ADR-010, ADR-021 (addendum), §3 Pillar 1, §7 (Open Question #15 addendum), §9 item 4 |
-| `feature-05-retriever-reranker-nodes` | `retriever` (pgvector top-k=20) + `reranker` (bge-reranker-base top-k=5) nodes; pins document dict shape | Phase 4 | In Progress | ADR-011 (new), §3 Pillar 1, §3 Pillar 4, §9 item 5 |
+| `feature-05-retriever-reranker-nodes` | `src/retrieval/vector_search.py` (`cosine_similarity`/`search` — the cosine-similarity decision Feature 04 deferred), `src/ingestion/document_store.py` gains a `default_store` singleton, `src/reranking/cross_encoder.py` (`_CrossEncoder`/`get_reranker_model` — stdlib stand-in for `sentence-transformers`, ADR-021 addendum), real `retriever`/`reranker` nodes (ADR-011) replacing the Feature 04 `_retriever_placeholder`; `build.py` now compiles `router -> retriever -> reranker -> grade_documents(placeholder)`; pins the `retrieved_docs`/`reranked_docs` dict shape; 74/74 tests passing via `python3 -m unittest` (74 = 54 carried over from Feature 04 + 20 new) | Phase 4 | **Done** | ADR-011 (new), ADR-021 (addendum), §3 Pillar 1, §3 Pillar 4, §7 (Open Question #15 addendum), §9 item 5 |
 | `feature-06-grade-documents-self-rag` | `grade_documents` node + self-RAG retry loop; adds `current_query` field and retry-exhaustion behavior | Phase 4 | In Progress | ADR-012 (new), §5.1, §3 Pillar 1, §9 item 6 |
 | `feature-07-diagnose-propose-action-nodes` | `diagnose` + `propose_action` nodes; adds tool registry, `side_effecting` flag, `diagnosis_confidence` field | Phase 4 | In Progress | ADR-013 (new), §5.1, §3 Pillar 1, §3 Pillar 2, §3 Pillar 4, §9 item 7 |
 | `feature-08-guardrail-output-node` | `guardrail_output` node; wires unsafe-verdict rejection branches at both call sites (deferred retrofit from ADR-009) | Phase 4 | In Progress | ADR-014 (new, retrofit), §5.2, §3 Pillar 3, §9 item 8 |
@@ -954,6 +954,16 @@ guardrail_output -(safe, post-execution)-> END
     exists, not an extension of this shim. Swap for real `psycopg2`/pgvector under the
     same retrofit pass; never exercised against either, and that must be verified, not
     assumed.
+    **Addendum (Feature 05):** that deferred decision is `src/retrieval/vector_search.py`
+    — plain-Python cosine similarity over `InMemoryDocumentStore` rows, a stand-in for
+    pgvector's `<=>` operator (O(n) per query, no index; fine for this sandbox's corpus
+    sizes, not a claim about production behavior). Separately, a sixth shim,
+    `src/reranking/cross_encoder.py`, substitutes for
+    `sentence_transformers.CrossEncoder("BAAI/bge-reranker-base")` (also not
+    installable here) — its `.predict()` raises `NotImplementedError`, mirroring every
+    other stub client. Both are net-new modules, not extensions of `document_store.py`,
+    consistent with that file's own deferral. Neither has been run against its real
+    package, and that must be verified, not assumed, in the same future retrofit pass.
 
 ---
 
@@ -1171,9 +1181,13 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
       addendum — stdlib stand-in for the pgvector `documents` table), real
       `router` node (ADR-010) replacing the Feature 03 placeholder; 54/54 tests
       pass via `python3 -m unittest discover -s tests`.
-- [ ] 5. Add the `retriever` and `reranker` nodes: pgvector similarity search at
+- [x] 5. Add the `retriever` and `reranker` nodes: pgvector similarity search at
       top-k=20 followed by `bge-reranker-base` cross-encoder re-ranking down to
-      top-k=5.
+      top-k=5. **Done** — `src/retrieval/vector_search.py` (cosine-similarity
+      stand-in for pgvector's `<=>`, ADR-021 addendum), `src/reranking/cross_encoder.py`
+      (stand-in for `sentence-transformers`, ADR-021 addendum), real `retriever`/
+      `reranker` nodes (ADR-011) replacing the Feature 04 placeholder; 74/74 tests
+      pass via `python3 -m unittest discover -s tests`.
 - [ ] 6. Add the `grade_documents` node that scores reranked context for relevance
       and, on a low score, loops back to `router` with a reformulated query, capped
       at 2 retries.

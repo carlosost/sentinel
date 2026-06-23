@@ -72,3 +72,12 @@ class InMemoryDocumentStore:
 
     def rows_for_corpus(self, corpus: str) -> List[DocumentRow]:
         return [row for row in self._rows.values() if row.corpus == corpus]
+
+
+# Process-wide singleton — the in-sandbox stand-in for "the one Postgres
+# `documents` table every node talks to" (ADR-021 addendum, Feature 05).
+# `scripts/ingest_corpora.py` writes here by default; `retriever`
+# (`src/graph/nodes/retriever.py`) reads from here by default. Tests construct
+# their own `InMemoryDocumentStore()` instances instead of touching this
+# singleton, so test runs never interfere with each other.
+default_store = InMemoryDocumentStore()

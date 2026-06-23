@@ -4,11 +4,14 @@ Graph assembly (ADR-001, ADR-007, ADR-009, ADR-010).
 v1 (Feature 01) was `entry -> END` — a placeholder so the schema and wiring exist
 before any real node is built. Feature 03 (ADR-009) replaced that placeholder with
 the first real node, `guardrail_input`, which conditionally routes to `reject` (on
-an unsafe verdict) or `router` (otherwise). Feature 04 (ADR-010) replaces the
+an unsafe verdict) or `router` (otherwise). Feature 04 (ADR-010) replaced the
 `router` placeholder with the real node: it classifies the alert into exactly one
-corpus and writes `state.route`. `retriever` itself doesn't exist yet (roadmap
-item 5) — `_retriever_placeholder` stands in for it, the same role
-`_router_placeholder` played here until this feature, so the graph stays
+corpus and writes `state.route`. Feature 05 (ADR-011) replaces `_retriever_placeholder`
+with the real `retriever` and `reranker` nodes: top-k=20 cosine-similarity search
+against the routed corpus, then cross-encoder re-ranking to top-k=5.
+`grade_documents` itself doesn't exist yet (roadmap item 6) —
+`_grade_documents_placeholder` stands in for it, the same placeholder role
+`_retriever_placeholder` played here until this feature, so the graph stays
 compilable end-to-end as each feature lands. The Postgres checkpointer (ADR-002)
 is not wired in yet: per ADR-015/Feature 09, that wiring happens once
 `await_human_approval` exists and there is an actual interrupt boundary to
@@ -32,13 +35,15 @@ from src.graph.nodes.guardrail_input import (
     guardrail_input_route,
 )
 from src.graph.nodes.reject import reject
+from src.graph.nodes.reranker import reranker
+from src.graph.nodes.retriever import retriever
 from src.graph.nodes.router import router
 from src.graph.state import IncidentState
 
 
-def _retriever_placeholder(state: IncidentState) -> dict:
-    """Placeholder for the `retriever` node (roadmap item 5 / Feature 05). Routes
-    straight to END until vector retrieval is implemented."""
+def _grade_documents_placeholder(state: IncidentState) -> dict:
+    """Placeholder for the `grade_documents` node (roadmap item 6 / Feature 06).
+    Routes straight to END until self-RAG relevance grading + retry exist."""
     return {}
 
 
@@ -49,7 +54,9 @@ def build_graph() -> StateGraph:
     graph.add_node("guardrail_input", guardrail_input)
     graph.add_node("reject", reject)
     graph.add_node("router", router)
-    graph.add_node("retriever", _retriever_placeholder)
+    graph.add_node("retriever", retriever)
+    graph.add_node("reranker", reranker)
+    graph.add_node("grade_documents", _grade_documents_placeholder)
 
     graph.add_edge(START, "guardrail_input")
     graph.add_conditional_edges(
@@ -59,6 +66,8 @@ def build_graph() -> StateGraph:
     )
     graph.add_edge("reject", END)
     graph.add_edge("router", "retriever")
-    graph.add_edge("retriever", END)
+    graph.add_edge("retriever", "reranker")
+    graph.add_edge("reranker", "grade_documents")
+    graph.add_edge("grade_documents", END)
 
     return graph.compile()

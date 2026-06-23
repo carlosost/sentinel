@@ -1,8 +1,8 @@
 # Feature 05 — `retriever` + `reranker` Nodes
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
-**PMA sections touched:** ADR-011 (new), §3 Pillar 1, §3 Pillar 4, §6 Feature Log, §9 item 5
+**Status:** Done — implemented and tested (against sandbox shims; see Implementation Status below)
+**PMA sections touched:** ADR-011 (new), ADR-021 (addendum), §3 Pillar 1, §3 Pillar 4, §6 Feature Log, §7 (Open Question #15 addendum), §9 item 5
 
 ## Feature Description
 
@@ -69,6 +69,35 @@ When `retriever` is actually implemented, its embedding call must encode
 `state.current_query` (falling back to `state.raw_alert` if unset), not `raw_alert`
 directly — see ADR-012. Neither this file's Gherkin nor its PyTest skeletons asserted
 the query source, so nothing above is invalidated by this.
+
+## Implementation Status (real code/tests, sandbox-constrained)
+
+### Implemented
+- `src/retrieval/vector_search.py` — plain-Python `cosine_similarity` + `search(store, corpus, query_embedding, k=20)`, the cosine-similarity decision `document_store.py`'s Feature 04 docstring explicitly deferred to this feature. O(n) per query, no index — a stand-in for pgvector's `<=>` operator, not a faithful reproduction.
+- `src/ingestion/document_store.py` — added a process-wide `default_store` singleton (the in-sandbox stand-in for "the one Postgres table every node talks to"); `scripts/ingest_corpora.py` and tests still use their own fresh `InMemoryDocumentStore()` instances, never this singleton.
+- `src/reranking/cross_encoder.py` — `_CrossEncoder`/`get_reranker_model()` stand-in for `sentence_transformers.CrossEncoder("BAAI/bge-reranker-base")`; `.predict()` raises `NotImplementedError`, mirroring `client_factory`'s stub clients. Has zero dependency on `src.gateway`, preserving ADR-011's gateway-exclusion boundary by construction, not just by convention.
+- `src/graph/nodes/retriever.py` — real node: reads `state.route` (raises `RetrieverError` if unset — never defaults to a corpus), embeds `state.raw_alert` via `client_factory.get_embedding_client(...)`, calls `vector_search.search` against the routed corpus, returns `retrieved_docs` in the ADR-011 dict shape. Accepts an optional `store=` kwarg for test injection; defaults to `document_store.default_store`.
+- `src/graph/nodes/reranker.py` — real node: short-circuits to `{"reranked_docs": []}` on empty input (untested edge case the original Gherkin/PyTest skeleton didn't enumerate, added defensively); otherwise scores all candidates via the cross-encoder stand-in, overwrites `score`, sorts descending, returns top 5. Never imports `client_factory`.
+- `src/graph/build.py` — `router -> retriever -> reranker -> grade_documents(placeholder)`; `_retriever_placeholder` removed, replaced by `_grade_documents_placeholder` (roadmap item 6 / Feature 06).
+- `tests/retrieval/test_vector_search.py` (10 tests), `tests/reranking/test_cross_encoder.py` (2 tests), `tests/graph/nodes/test_retriever.py` (4 tests), `tests/graph/nodes/test_reranker.py` (4 tests) — all Deterministic Tier.
+- `tests/graph/test_skeleton.py` — safe-path test extended through `retriever`/`reranker` with the embedding client mocked; asserts the default empty store yields `retrieved_docs == [] ` and `reranked_docs == []`.
+
+### Deviations from the original Gherkin/PyTest skeleton
+- Skeleton didn't specify retriever's failure mode when `state.route` is unset; added `RetrieverError` (same hard-fail discipline as `RouterError`) plus a dedicated test, not in the original enumeration.
+- Skeleton didn't specify reranker's behavior on empty `retrieved_docs`; added an explicit short-circuit (returns `[]` without touching the cross-encoder) plus a dedicated test.
+- `vector_search.py` and the `document_store.default_store` singleton are net-new modules/decisions, not just node implementations — both are additive consequences of Feature 04's explicit "Feature 05 will need its own decision" deferral, not scope creep.
+
+### Verification performed
+- `python3 -m unittest discover -s tests` → **74/74 passing** (up from 54; +20 new: 10 vector_search, 2 cross_encoder shim, 4 retriever, 4 reranker; `test_skeleton.py`'s safe-path test extended rather than added).
+- `bash scripts/lint_gateway_usage.sh` → passed (reranker's local cross-encoder import correctly does not trip the gateway-bypass lint).
+- `python3 scripts/run_eval.py` → passed (harness mechanics only; no ragas baseline yet — still gated on `diagnose`/`propose_action`, roadmap item 7).
+
+### Definition of Done checklist
+- [x] Gherkin scenarios from this spec have corresponding passing tests (corpus filter, top-k=20 cap, gateway-routed embedding call; top-5 descending rerank, score overwrite, gateway-isolation).
+- [x] Deterministic Tier fully mocked, no live infra/API keys.
+- [x] PROJECT_MEMORY.md updated (Feature Log, ADR-021 addendum, §9 checkbox).
+- [ ] Probabilistic Tier (ragas `context_precision`/`context_recall` baseline) — not yet applicable; needs `diagnose`/`propose_action` (Feature 07) before `make eval` has a full pipeline to score.
+- [ ] Real-package parity (Open Question #15: real pgvector query, real `sentence-transformers` cross-encoder) — not yet verified; tracked, not blocking.
 
 ## Blast Radius
 
