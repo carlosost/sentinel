@@ -522,6 +522,23 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   under this constraint, the more retrofit work #15 will represent; Features 04,
   06, and 09 in particular cannot be honestly implemented against `_compat.py`
   and will force the issue sooner rather than later.
+- **Addendum (Feature 06):** rather than forcing a switch to real `langgraph`
+  as this ADR anticipated, `_compat.py` was instead extended in place to
+  support cycles (`add_conditional_edges` targeting an already-visited node,
+  `GraphRecursionError` + a `max_steps` runtime cap) — the same
+  extend-don't-replace pattern this ADR's own shims established, applied to a
+  new capability rather than only to a new package. Open Question #15's scope
+  is unchanged (still tracks real `langgraph` parity); this only changes how
+  much of `_compat.py`'s surface that future swap will need to cover.
+- **Addendum (Feature 09):** likewise, `interrupt()`/checkpointed pause-resume
+  was added to `_compat.py` in place (`GraphInterrupt`, `interrupt()`,
+  `compile(checkpointer=...)`, `invoke(..., config=...)`,
+  `update_state(...)`) rather than forcing real `langgraph` — see that
+  module's own ADDENDUM docstring for exactly what's faithfully modeled
+  (pause/persist/resume, restart-survival) versus deliberately simplified
+  (no generator-replay return value from `interrupt()`). A parallel
+  `src/graph/checkpoint.py` (`InMemoryCheckpointSaver`) stands in for
+  `PostgresSaver`. Open Question #15's scope grows accordingly.
 - **Status:** Accepted (provisional — superseded the moment real package access is
   available).
 
@@ -628,8 +645,13 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   `PostgresSaver` wiring in `src/graph/build.py` implemented per ADR-015. Resume
   routing (`approved -> execute`, `rejected -> diagnose`) is wired; `execute` itself
   is roadmap item 10. The HTTP API layer for starting runs/submitting decisions is
-  explicitly deferred (Open Question #10). See
-  `/memory/features/feature-09-await-human-approval-node.md`.
+  explicitly deferred (Open Question #10). Implemented against an `_compat.py`
+  addendum (`GraphInterrupt`/`interrupt()`/checkpointer support) and
+  `src/graph/checkpoint.py`'s `InMemoryCheckpointSaver` standing in for
+  `PostgresSaver` (ADR-021 addendum — no PyPI egress/live Postgres in this
+  sandbox); the restart-survival property is tested via two graph objects
+  sharing one checkpointer instance rather than two real processes against
+  real Postgres. See `/memory/features/feature-09-await-human-approval-node.md`.
 - **Implementation status (Feature 10):** `execute` implemented per ADR-016 against a
   mock staging API (resolves Open Question #3), dispatching via the tool registry and
   honoring ADR-015's `modified_action` precedence. Project Charter success criterion 3
@@ -847,7 +869,7 @@ guardrail_output -(safe, post-execution)-> END
 | `feature-06-grade-documents-self-rag` | `src/graph/nodes/grade_documents.py` (real node + `grade_documents_route` path function + `GradeDocumentsError`, ADR-012); `current_query` field added to `IncidentState`, read by `router`/`retriever`/`reranker` with `raw_alert` fallback; `_compat.py` retrofitted to support cycles (`GraphRecursionError` + `max_steps` runtime cap, ADR-021 addendum) — the graph's first real cycle, `grade_documents -(low relevance, retry budget remaining)-> router`; `retry_count` semantics deliberately redefined as "low-relevance gradings seen so far" to remove a routing ambiguity the Gherkin's wording left open; `build.py` rewired with a new `_diagnose_placeholder`; 84/84 tests passing via `python3 -m unittest` (84 = 74 carried over from Feature 05 + 10 new) | Phase 4 | **Done** | ADR-012 (new), ADR-021 (addendum), §5.1, §3 Pillar 1, §7 (Open Question #8), §9 item 6 |
 | `feature-07-diagnose-propose-action-nodes` | `src/tools/registry.py` (new — static `TOOL_REGISTRY`, ADR-013); real `diagnose`/`propose_action` nodes (`src/graph/nodes/`) replacing `_diagnose_placeholder`; `diagnose` derives `diagnosis_confidence` from `relevance_grade` vs. `grade_documents.RELEVANCE_THRESHOLD`; `propose_action` attaches `side_effecting` from the registry only, never trusting an LLM-supplied value (new trust-boundary decision beyond ADR-013's original prose); `diagnosis_confidence` field added to `src/graph/state.py` (closing a scaffolding lag — §5.1 had already pinned it); `build.py` now compiles `grade_documents -> diagnose -> propose_action -> guardrail_output(placeholder)`; 101/101 tests passing via `python3 -m unittest` (101 = 84 carried over from Feature 06 + 17 new) | Phase 4 | **Done** | ADR-013 (confirmed, no amendment), §5.1, §3 Pillar 1, §3 Pillar 2, §3 Pillar 4, §9 item 7 |
 | `feature-08-guardrail-output-node` | Real `guardrail_output` node + `guardrail_output_route` (`src/graph/nodes/guardrail_output.py`), wired to replace `_guardrail_output_placeholder`; one function pair serves both ADR-014 call sites, distinguished via `execution_result`; added `_await_human_approval_placeholder`/`_execute_placeholder` (roadmap items 9-10) as new routing targets; **found and fixed a pre-existing bug** in `reject.py` (it picked `guardrail_input_verdict` by truthiness rather than checking which verdict was actually `"unsafe"`, so a safe input verdict was silently shadowing a later unsafe output verdict's reason) — fixed with a regression test; 111/111 tests passing via `python3 -m unittest discover -s tests` (up from 101) | Phase 4 | **Done** | ADR-014 (confirmed, no amendment), §5.2, §3 Pillar 3, §7 (Open Question #6, resolved), §9 item 8 |
-| `feature-09-await-human-approval-node` | `await_human_approval` interrupt node + `PostgresSaver` wiring; formalizes `HumanDecision` shape and `modified_action` precedence | Phase 4 | In Progress | ADR-015 (new), §5.1, §3 Pillar 2, §9 item 9 |
+| `feature-09-await-human-approval-node` | `src/graph/nodes/await_human_approval.py` (real `await_human_approval`/`await_human_approval_route`/`resolve_action`, ADR-015); `_compat.py` gains `GraphInterrupt`/`interrupt()`/checkpointer support (ADR-021 addendum); `src/graph/checkpoint.py` (`InMemoryCheckpointSaver` — stdlib stand-in for `PostgresSaver`); formalizes `HumanDecision` TypedDict in `state.py`; `build_graph(checkpointer=...)` wires `await_human_approval -(approved)-> execute`, `-(rejected)-> diagnose`; `tests/graph/test_skeleton.py`'s side-effecting test rewritten as a full interrupt->update_state->resume round trip; restart-survival tested via two graph objects sharing one checkpointer instance, modeling "two processes, one Postgres"; 129/129 tests pass via `python3 -m unittest discover -s tests` (129 = 111 carried over from Feature 08 + 18 new) | Phase 4 | **Done** | ADR-015 (new), ADR-021 (addendum), §5.1, §3 Pillar 2, §7 (Open Question #9 partially de-risked, new Open Question #10), §9 item 9 |
 | `feature-10-execute-node` | `execute` node against a mock staging API; resolves Open Question #3, pins `execution_result` shape | Phase 4 | In Progress | ADR-016 (new), §5.1, §3 Pillar 2, §9 item 10 |
 | `feature-11-write-postmortem-node` | `write_postmortem` node; drafts a 4-section postmortem from diagnosis/action/execution_result, confidence-aware notes, into `guardrail_output`'s post-execution branch | Phase 4 | In Progress | ADR-017 (new), §3 Pillar 3, §7 (new Open Question), §9 item 11 |
 | `feature-12-litellm-proxy-hardening` | LiteLLM proxy production config: fallback chains, semantic caching with eval carve-out, per-key rate limits, trace_id-tagged cost logging | Phase 4 | In Progress | ADR-018 (new), §5.3, §3 Pillar 5, §3 Pillar 4, §7 (new Open Question), §9 item 12 |
@@ -1232,9 +1254,17 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
       -> `_execute_placeholder`, unsafe -> `reject`; also fixed a pre-existing
       `reject.py` bug (see Feature Log); 111/111 tests pass via
       `python3 -m unittest discover -s tests`.
-- [ ] 9. Add the `await_human_approval` interrupt node and wire `PostgresSaver` so any
+- [x] 9. Add the `await_human_approval` interrupt node and wire `PostgresSaver` so any
       `side_effecting=True` proposed action pauses the graph durably until a human
-      submits an `{approved, modified_action, note}` decision.
+      submits an `{approved, modified_action, note}` decision. **Done** —
+      `src/graph/nodes/await_human_approval.py` (ADR-015); `_compat.py` gained
+      `interrupt()`/`GraphInterrupt`/checkpointer support (ADR-021 addendum);
+      `src/graph/checkpoint.py`'s `InMemoryCheckpointSaver` stands in for
+      `PostgresSaver`; `build_graph(checkpointer=...)` wires
+      `await_human_approval -(approved)-> execute`,
+      `-(rejected)-> diagnose`; resume restart-survival tested via two graph
+      objects sharing one checkpointer instance; 129/129 tests pass via
+      `python3 -m unittest discover -s tests`.
 - [ ] 10. Add the `execute` node that runs the approved remediation against [mocked
       tool calls / a staging API — resolve Open Question #3 first], routing failures
       back to `diagnose` and successes to `write_postmortem`.

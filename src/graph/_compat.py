@@ -20,18 +20,55 @@ package is not installable here. This shim implements `START`/`END` sentinels an
     something well-formed graphs (like Sentinel's, whose loop is bounded by
     `grade_documents`' own retry cap) should ever hit.
 
-It still deliberately does NOT support `interrupt()`/durable checkpointing —
-required starting around Feature 09 (HITL interrupt/resume). Open Question #15
-tracks replacing this shim with real `langgraph` (and, with it, re-verifying every
-node wired against it) before any feature that needs that capability ships its
-"real" implementation. Until then, this shim itself is the known limiting factor on
-how much of the roadmap can be faithfully executed here.
+Feature 09 (ADR-015) adds interrupt()/checkpoint support — the addendum below —
+following the same pattern as Feature 06's cycle-support addendum: extend this
+shim in place rather than rewrite it, and call out exactly what's added.
+
+ADDENDUM (Feature 09 — HITL interrupt/resume):
+  - `interrupt(value)`: raises `GraphInterrupt(value)`. Unlike real langgraph's
+    `interrupt()` (which suspends and, on resume, *returns* a value to the
+    caller via a generator-replay mechanism this stdlib shim has no way to
+    faithfully reproduce), this shim's `interrupt()` always raises — it never
+    returns. A node that wants different behavior on resume must check its own
+    state for whatever the human/caller wrote back (e.g. `await_human_approval`
+    checks `state.get("human_decision")`) rather than relying on `interrupt()`'s
+    return value. This is a deliberate, documented simplification, not a bug —
+    see `src/graph/nodes/await_human_approval.py`'s docstring for how the one
+    node that uses this is written around the limitation.
+  - `compile(checkpointer=None)`: a compiled graph may now be given a
+    checkpointer (see `src/graph/checkpoint.py`'s `InMemoryCheckpointSaver`,
+    the sandbox stand-in for real `langgraph.checkpoint.postgres.PostgresSaver`
+    per ADR-002/015). Without one, `invoke()` behaves exactly as before
+    (Features 01-08); an uncaught `GraphInterrupt` simply propagates, which is
+    correct — there is nowhere to persist the pause.
+  - `invoke(input_, *, config=None, max_steps=...)`: `config` may carry
+    `{"configurable": {"thread_id": ...}}`, mirroring real langgraph's API
+    surface. When a node raises `GraphInterrupt` during a run that has both a
+    checkpointer and a `thread_id`, the run halts, the in-flight state and the
+    paused node's name are persisted via the checkpointer, and `invoke()`
+    returns `{**state, "__interrupt__": <value>}` instead of raising.
+  - `invoke(None, config=...)`: resumes a previously-paused thread — loads the
+    persisted `(state, paused_node)` from the checkpointer and continues
+    execution from `paused_node` (re-running it; see the `interrupt()` note
+    above for why this is safe for `await_human_approval` specifically).
+  - `update_state(config, values)`: merges `values` into a paused thread's
+    persisted state without resuming execution — this is how a human's
+    decision is written back before the resume call, matching the
+    `update_state(...)` then `invoke(None, config=...)` two-step real langgraph
+    itself uses for this exact pattern (see PROJECT_MEMORY.md §3 Pillar 2).
+
+This shim still does NOT support real `langgraph`'s generator-based `interrupt()`
+return-value semantics, or genuine cross-process persistence (the checkpointer
+is in-process memory, not a real Postgres connection) — Open Question #15
+tracks replacing this shim (and `InMemoryCheckpointSaver`) with the real
+packages, re-verifying every node wired against it, before any feature ships
+its "real" implementation against actual infrastructure.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 START = "__start__"
 END = "__end__"
@@ -56,6 +93,25 @@ class GraphRecursionError(RuntimeError):
     that produces an unbounded loop, rather than hanging."""
 
 
+class GraphInterrupt(Exception):
+    """Raised by `interrupt(value)` (Feature 09/ADR-015) to pause a run. Caught
+    by `_CompiledGraph.invoke()`, which persists the pause via the configured
+    checkpointer if one and a `thread_id` are available — otherwise this
+    propagates uncaught, since there is nowhere to persist the pause."""
+
+    def __init__(self, value: Any):
+        super().__init__(value)
+        self.value = value
+
+
+def interrupt(value: Any) -> Any:
+    """Pause the current node (Feature 09/ADR-015). Always raises
+    `GraphInterrupt(value)` — see this module's docstring addendum for why
+    this shim cannot faithfully reproduce real langgraph's "returns a value on
+    resume" behavior, and how `await_human_approval` is written around that."""
+    raise GraphInterrupt(value)
+
+
 @dataclass(frozen=True)
 class _ConditionalEdge:
     path: PathFn
@@ -69,11 +125,13 @@ class _CompiledGraph:
         nodes: dict[str, NodeFn],
         static_edges: dict[str, str],
         conditional_edges: dict[str, _ConditionalEdge],
+        checkpointer: Optional[Any] = None,
     ):
         self._entry = entry
         self._nodes = nodes
         self._static_edges = static_edges
         self._conditional_edges = conditional_edges
+        self._checkpointer = checkpointer
 
     def _next(self, current: str, state: dict) -> str:
         if current in self._conditional_edges:
@@ -87,9 +145,47 @@ class _CompiledGraph:
             return edge.path_map[key]
         return self._static_edges.get(current, END)
 
-    def invoke(self, initial_state: dict, *, max_steps: int = DEFAULT_MAX_STEPS) -> dict:
-        state: dict[str, Any] = dict(initial_state)
-        current = self._entry
+    @staticmethod
+    def _thread_id(config: Optional[dict]) -> Optional[str]:
+        if not config:
+            return None
+        return config.get("configurable", {}).get("thread_id")
+
+    def update_state(self, config: dict, values: dict) -> None:
+        """Merge `values` into a paused thread's persisted state without
+        resuming execution (Feature 09/ADR-015) — the step that writes a
+        human's decision back before the `invoke(None, config=...)` resume
+        call. Requires a checkpointer and a thread_id with an existing
+        checkpoint (i.e. a thread that is actually paused)."""
+        thread_id = self._thread_id(config)
+        if self._checkpointer is None or thread_id is None:
+            raise ValueError("update_state requires a checkpointer and a thread_id")
+        state, paused_at = self._checkpointer.load(thread_id)
+        state.update(values)
+        self._checkpointer.save(thread_id, state, paused_at)
+
+    def invoke(
+        self,
+        input_: Optional[dict],
+        *,
+        config: Optional[dict] = None,
+        max_steps: int = DEFAULT_MAX_STEPS,
+    ) -> dict:
+        thread_id = self._thread_id(config)
+
+        if input_ is None:
+            # Resume (Feature 09/ADR-015): load the paused state/node rather
+            # than starting fresh from START.
+            if self._checkpointer is None or thread_id is None:
+                raise ValueError(
+                    "invoke(None, ...) resumes a paused thread and requires both "
+                    "a checkpointer and a thread_id"
+                )
+            state, current = self._checkpointer.load(thread_id)
+        else:
+            state = dict(input_)
+            current = self._entry
+
         steps = 0
         while current != END:
             if steps >= max_steps:
@@ -101,9 +197,22 @@ class _CompiledGraph:
                     "loop) is bounded by its own retry cap."
                 )
             steps += 1
-            update = self._nodes[current](state) or {}
+            try:
+                update = self._nodes[current](state) or {}
+            except GraphInterrupt as exc:
+                if self._checkpointer is None or thread_id is None:
+                    # No way to persist the pause — nothing to resume later,
+                    # so propagate rather than silently swallowing it.
+                    raise
+                self._checkpointer.save(thread_id, state, current)
+                return {**state, "__interrupt__": exc.value}
             state.update(update)
             current = self._next(current, state)
+
+        if self._checkpointer is not None and thread_id is not None:
+            # Run reached END — nothing left to resume; don't leave a stale
+            # checkpoint behind for a completed thread.
+            self._checkpointer.clear(thread_id)
         return state
 
 
@@ -151,7 +260,7 @@ class StateGraph:
             return [self._static_edges[node]]
         return [END]
 
-    def compile(self) -> _CompiledGraph:
+    def compile(self, *, checkpointer: Optional[Any] = None) -> _CompiledGraph:
         if self._entry is None:
             raise GraphNotLinearError("No edge from START — graph has no entry point.")
 
@@ -187,4 +296,5 @@ class StateGraph:
             nodes=dict(self._nodes),
             static_edges=dict(self._static_edges),
             conditional_edges=dict(self._conditional_edges),
+            checkpointer=checkpointer,
         )

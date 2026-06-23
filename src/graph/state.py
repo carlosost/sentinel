@@ -13,6 +13,19 @@ from __future__ import annotations
 from typing import Literal, Optional, TypedDict
 
 
+class HumanDecision(TypedDict):
+    """ADR-015 (Feature 09) — formalizes `human_decision`'s shape, which
+    Pillar 2's prose described informally before this feature needed it
+    typed. Written by whatever submits the approval decision (the HTTP API
+    layer, Open Question #10, once it exists) via `update_state`, then read
+    by `await_human_approval_route` and, per ADR-015's `modified_action`
+    precedence rule, by `execute` (roadmap item 10)."""
+
+    approved: bool
+    modified_action: Optional[dict]
+    note: str
+
+
 class IncidentState(TypedDict):
     raw_alert: str
 
@@ -49,8 +62,11 @@ class IncidentState(TypedDict):
     # `diagnosis` text to know whether to discount it.
     diagnosis_confidence: Optional[Literal["high", "low"]]
 
-    # Pillar 2 (HITL) — populated once await_human_approval/execute land (items 9-10).
-    human_decision: Optional[dict]
+    # Pillar 2 (HITL). ADR-015 (Feature 09) formalizes human_decision's shape
+    # as HumanDecision (see above) — written via update_state before a
+    # paused thread is resumed, read by await_human_approval_route and (per
+    # ADR-015's modified_action precedence) by execute (roadmap item 10).
+    human_decision: Optional[HumanDecision]
     execution_result: Optional[dict]
 
     # Final reporting step (roadmap item 11).

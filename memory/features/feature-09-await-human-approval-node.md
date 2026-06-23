@@ -1,7 +1,7 @@
 # Feature 09 — `await_human_approval` Interrupt Node + `PostgresSaver` Wiring
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
+**Status:** Done
 **PMA sections touched:** ADR-015 (new), §5.1, §3 Pillar 2, §7 (new Open Question,
 clarifies #9), §6 Feature Log, §9 item 9
 
@@ -161,3 +161,111 @@ def test_resume_after_simulated_process_restart_continues_correctly(test_postgre
     success criteria."""
     ...
 ```
+
+## Implementation Status
+
+**Status: Done.**
+
+### What was built
+
+- **`src/graph/_compat.py` addendum** — added `GraphInterrupt` (exception),
+  `interrupt(value)` (always raises `GraphInterrupt(value)` — see deviation
+  below), and checkpointer support: `StateGraph.compile(checkpointer=None)`,
+  `_CompiledGraph.invoke(input_, *, config=None, max_steps=...)` (now accepts
+  `config={"configurable": {"thread_id": ...}}` and `input_=None` to resume),
+  and a new `_CompiledGraph.update_state(config, values)` method that merges
+  values into a paused thread's persisted state without resuming — the
+  write-then-resume two-step the PMA's own Pillar 2 prose already specified
+  (`update_state(...)` then `invoke(None, config=...)`).
+- **`src/graph/checkpoint.py` (new)** — `InMemoryCheckpointSaver`, the
+  sandbox stand-in for `PostgresSaver` (ADR-021 addendum). Stores
+  `(state, paused_node)` per `thread_id`, deep-copying on both save and load
+  so neither side can mutate the other's view. `CheckpointNotFoundError` on
+  `load()` of an unknown `thread_id` — never fabricates an empty state.
+- **`src/graph/nodes/await_human_approval.py` (new)** — `await_human_approval`
+  (interrupts when `human_decision` is unset, no-ops once it's set),
+  `await_human_approval_route` (routes `approved`/`rejected`), and
+  `resolve_action` (ADR-015's `modified_action`-over-`proposed_action`
+  precedence rule, forward groundwork for `execute`/Feature 10).
+- **`src/graph/state.py`** — added the `HumanDecision` TypedDict
+  (`{approved, modified_action, note}`) and retyped `human_decision` to
+  `Optional[HumanDecision]`.
+- **`src/graph/build.py`** — `build_graph(checkpointer=None)` now takes an
+  optional checkpointer (omitted preserves every pre-Feature-09 caller's
+  behavior exactly); `_await_human_approval_placeholder` removed, real
+  `await_human_approval` node wired with conditional edges
+  `-(approved)-> execute`, `-(rejected)-> diagnose`. `_execute_placeholder`
+  unchanged (Feature 10).
+- **Tests**: `tests/graph/test_compat.py` (+5 cases for the addendum),
+  `tests/graph/test_checkpoint.py` (new, 6 cases), `tests/graph/nodes/
+  test_await_human_approval.py` (new, matches the 3 pre-drafted skeleton
+  names exactly), `tests/graph/test_hitl_checkpoint_restart.py` (new, matches
+  the 2 pre-drafted skeleton names, models "destroy and reinstantiate the
+  graph object" via `del` + a second `build_graph()` call sharing one
+  checkpointer instance). `tests/graph/test_skeleton.py`'s side-effecting test
+  rewritten to do a full interrupt -> `update_state` -> resume round trip
+  instead of asserting a placeholder no-op.
+
+### Deviations from the spec (and why)
+
+1. **`interrupt()` always raises — it never returns a value, even
+   conceptually, on resume.** Real langgraph's `interrupt()` suspends a
+   generator and, on resume, *returns* the value passed to `Command(resume=
+   ...)`. This stdlib shim has no generator/coroutine machinery to replay a
+   function mid-execution, so faithfully reproducing that return-value
+   semantics isn't possible without a much larger rewrite of `_compat.py`
+   than this feature's scope warrants. Instead, `await_human_approval` is
+   written to be safely re-run on resume: it checks `state.get("human_decision")`
+   itself and only calls `interrupt()` when it's still unset. This is
+   documented at length in `_compat.py`'s ADDENDUM docstring and the node's
+   own docstring, flagged as a deliberate, known shim limitation (extending
+   Open Question #15), not a silent gap.
+2. **Resume mechanism is `update_state(config, values)` then
+   `invoke(None, config=...)`**, not `Command(resume=...)` — this follows the
+   PMA's own pre-existing Pillar 2 prose (`graph.invoke(None,
+   config={"configurable": {"thread_id": ...}})`) read verbatim before any
+   code was written for this feature, rather than the Gherkin's looser
+   "the graph is resumed for that thread_id" phrasing, which didn't pin a
+   specific API. `update_state` is new (not previously specified) but is the
+   natural complement needed to make the PMA's own resume convention work.
+3. **Test-schema Postgres → `InMemoryCheckpointSaver`.** Per ADR-021 (no
+   PyPI egress, no live Postgres in this sandbox), both new test files use
+   the in-memory checkpointer shim instead of a real `test_postgres_saver`
+   fixture. The "destroy and reinstantiate the graph object" restart
+   simulation is preserved exactly — only the backing store differs. Test
+   names match the spec's skeletons exactly (`test_run_pauses_at_
+   await_human_approval_and_persists_checkpoint`,
+   `test_resume_after_simulated_process_restart_continues_correctly`) so a
+   future swap to real Postgres only needs to change the fixture, not the
+   test names/structure.
+4. **`diagnose` re-entry**: per the spec's own Blast Radius note, the
+   `await_human_approval -(rejected)-> diagnose` edge is wired and tested
+   (`test_rejected_routes_to_diagnose`), but `diagnose`'s prompt/behavior is
+   untouched — it does not yet use `human_decision.note` as context. Open
+   Question #9 remains open, only partially de-risked, exactly as the spec
+   anticipated.
+
+### Verification
+
+- `python -m unittest discover -s tests -p "test_*.py"`: **129/129 passing**
+  (was 111 after Feature 08; +18 from this feature's new/extended test files).
+- `bash scripts/lint_gateway_usage.sh`: PASS (no direct provider imports).
+- `python scripts/run_eval.py`: harness mechanics PASS (no new gap introduced
+  — `await_human_approval` makes no model call).
+
+### Definition of Done
+
+- [x] Spec read and Conflict Check verified (no skeleton correction needed,
+      confirmed).
+- [x] `HumanDecision` shape formalized in `state.py`.
+- [x] `modified_action` precedence rule implemented as `resolve_action`,
+      forward groundwork for Feature 10.
+- [x] Checkpointer wiring added to `build_graph()`, off by default.
+- [x] `await_human_approval` interrupts and persists; resumes correctly via
+      `update_state` + `invoke(None, ...)`.
+- [x] Restart-survival property tested (two separate graph objects, one
+      checkpointer instance).
+- [x] All Gherkin scenarios covered by tests (approved/no-modification,
+      approved/modification, rejected, pause+persist, restart+resume).
+- [x] HTTP API layer explicitly deferred — new Open Question recorded in PMA.
+- [x] PMA updated (Feature Log, ADR-015 status, §9 checkbox).
