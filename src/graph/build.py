@@ -24,24 +24,30 @@ node/routing-function pair reused at the pre-execution call site now wired
 `-(safe, side-effecting)-> await_human_approval`, `-(safe, read-only)->
 execute`) and, per ADR-014, the future post-execution call site
 (`write_postmortem -> guardrail_output`, roadmap item 11) the same function
-already supports by branching on `execution_result`. `await_human_approval`
-and `execute` don't exist yet (roadmap items 9-10) — `_await_human_approval_
-placeholder` and `_execute_placeholder` stand in for them, the same
-placeholder role `_diagnose_placeholder`/`_guardrail_output_placeholder`
-played here until their respective features. The Postgres checkpointer
-(ADR-002) is not wired in yet: per ADR-015/Feature 09, that wiring happens
-once `await_human_approval` exists and there is an actual interrupt boundary
-to persist across. Until then the graph compiles with no checkpointer
-(in-process only).
+already supports by branching on `execution_result`. Feature 09 (ADR-015)
+replaces `_await_human_approval_placeholder` with the real
+`await_human_approval` node: it interrupts (pauses + persists via the
+checkpointer) until `state.human_decision` is set, then conditionally routes
+`-(approved)-> execute`, `-(rejected)-> diagnose` (the diagnose re-entry Open
+Question #9 partially de-risks — the edge exists, `diagnose`'s own behavior on
+re-entry is unchanged/unscoped). `execute` doesn't exist yet (roadmap item
+10) — `_execute_placeholder` still stands in for it. `build_graph()` now
+takes an optional `checkpointer` (see `src/graph/checkpoint.py`'s
+`InMemoryCheckpointSaver`, the sandbox stand-in for `PostgresSaver` per
+ADR-002/015); omitting it preserves every prior feature's behavior exactly
+(an uncaught interrupt simply propagates, since there's nowhere to persist
+it) — only call sites that actually need pause/resume must pass one.
 
 SANDBOX NOTE (ADR-021): imports a stdlib shim (`src/graph/_compat.py`) in place of
 real `langgraph`, since this sandbox has no PyPI egress. The shim now supports
-linear chains, conditional branching, and cycles (Feature 06 addendum) — it still
-does not support `interrupt()`/durable checkpointing, needed starting Feature 09.
-See `_compat.py`'s docstring and Open Question #15.
+linear chains, conditional branching, cycles (Feature 06 addendum), and, as of
+Feature 09, `interrupt()`/checkpointed pause-resume (see `_compat.py`'s ADDENDUM
+docstring and Open Question #15 for exactly what's still not faithfully modeled).
 """
 
 from __future__ import annotations
+
+from typing import Optional
 
 from src.graph._compat import END, START, StateGraph
 from src.graph.nodes.grade_documents import (
@@ -57,6 +63,12 @@ from src.graph.nodes.guardrail_input import (
     guardrail_input_route,
 )
 from src.graph.nodes.diagnose import diagnose
+from src.graph.nodes.await_human_approval import (
+    ROUTE_APPROVED,
+    ROUTE_REJECTED,
+    await_human_approval,
+    await_human_approval_route,
+)
 from src.graph.nodes.guardrail_output import (
     ROUTE_AWAIT_APPROVAL,
     ROUTE_EXECUTE,
@@ -73,13 +85,6 @@ from src.graph.nodes.router import router
 from src.graph.state import IncidentState
 
 
-def _await_human_approval_placeholder(state: IncidentState) -> dict:
-    """Placeholder for the `await_human_approval` interrupt node (roadmap item
-    9 / Feature 09). Routes straight to END until the PostgresSaver-backed
-    interrupt and HumanDecision shape exist."""
-    return {}
-
-
 def _execute_placeholder(state: IncidentState) -> dict:
     """Placeholder for the `execute` node (roadmap item 10 / Feature 10).
     Routes straight to END until the mock staging API call and
@@ -87,8 +92,15 @@ def _execute_placeholder(state: IncidentState) -> dict:
     return {}
 
 
-def build_graph() -> StateGraph:
-    """Construct and compile the Sentinel graph for the current feature set."""
+def build_graph(checkpointer: Optional[object] = None) -> StateGraph:
+    """Construct and compile the Sentinel graph for the current feature set.
+
+    `checkpointer` (Feature 09/ADR-015) is the sandbox `InMemoryCheckpointSaver`
+    stand-in for `PostgresSaver` — pass the same instance across separate
+    `build_graph()` calls to simulate resuming a paused thread after a process
+    restart (see `tests/graph/test_hitl_checkpoint_restart.py`). Omitted by
+    default so every pre-Feature-09 caller/test is unaffected.
+    """
     graph = StateGraph(IncidentState)
 
     graph.add_node("guardrail_input", guardrail_input)
@@ -100,7 +112,7 @@ def build_graph() -> StateGraph:
     graph.add_node("diagnose", diagnose)
     graph.add_node("propose_action", propose_action)
     graph.add_node("guardrail_output", guardrail_output)
-    graph.add_node("await_human_approval", _await_human_approval_placeholder)
+    graph.add_node("await_human_approval", await_human_approval)
     graph.add_node("execute", _execute_placeholder)
 
     graph.add_edge(START, "guardrail_input")
@@ -130,7 +142,11 @@ def build_graph() -> StateGraph:
             GUARDRAIL_OUTPUT_ROUTE_END: END,
         },
     )
-    graph.add_edge("await_human_approval", END)
+    graph.add_conditional_edges(
+        "await_human_approval",
+        await_human_approval_route,
+        {ROUTE_APPROVED: "execute", ROUTE_REJECTED: "diagnose"},
+    )
     graph.add_edge("execute", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

@@ -1,23 +1,29 @@
 """Deterministic Tier — integration-style test of the real entry path
 (guardrail_input -> router -> retriever -> reranker -> grade_documents <-> router
 loop -> diagnose -> propose_action -> guardrail_output -> {reject |
-await_human_approval(placeholder) | execute(placeholder)}), superseding
-Feature 01's entry->END smoke test now that real nodes exist (ADR-009's Blast
-Radius note). guardrail_check, router's classification call, retriever's
-embedding call, grade_documents' grading call, diagnose's call, and
-propose_action's call are all mocked; the default (empty) document store means
-retriever returns zero candidates and reranker short-circuits without touching
-the cross-encoder. This never asserts moderation, routing, retrieval, grading,
-diagnosis, or proposal accuracy — only the graph's wiring/routing contract
-(ADR-010/ADR-011/ADR-012/ADR-013/ADR-014's Pillar Impact notes), including that
-the self-RAG cycle (Feature 06's `_compat.py` addendum) actually executes
-end-to-end, not just compiles."""
+await_human_approval | execute(placeholder)}), superseding Feature 01's
+entry->END smoke test now that real nodes exist (ADR-009's Blast Radius note).
+guardrail_check, router's classification call, retriever's embedding call,
+grade_documents' grading call, diagnose's call, and propose_action's call are
+all mocked; the default (empty) document store means retriever returns zero
+candidates and reranker short-circuits without touching the cross-encoder.
+This never asserts moderation, routing, retrieval, grading, diagnosis, or
+proposal accuracy — only the graph's wiring/routing contract
+(ADR-010/ADR-011/ADR-012/ADR-013/ADR-014/ADR-015's Pillar Impact notes),
+including that the self-RAG cycle (Feature 06's `_compat.py` addendum) and the
+HITL interrupt/resume cycle (Feature 09's addendum) actually execute
+end-to-end, not just compile. The side-effecting test below now passes a
+checkpointer + thread_id config and a full
+interrupt-then-resume-then-route-to-execute round trip, since
+`await_human_approval` (Feature 09) is a real interrupting node, not a
+placeholder."""
 
 import json
 import unittest
 from unittest.mock import MagicMock, patch
 
 from src.graph.build import build_graph
+from src.graph.checkpoint import InMemoryCheckpointSaver
 
 
 def _initial_state(raw_alert: str = "disk usage at 95% on db-primary") -> dict:
@@ -230,8 +236,11 @@ class GraphSkeletonTests(unittest.TestCase):
         mock_diagnose_chat_client,
         mock_propose_action_chat_client,
     ):
-        """Proves the safe + side_effecting branch (ADR-014) actually executes
-        end-to-end and reaches await_human_approval(placeholder), not execute."""
+        """Proves the safe + side_effecting branch (ADR-014) reaches the real
+        `await_human_approval` node (Feature 09/ADR-015), which interrupts and
+        persists a checkpoint — then proves resuming with an approved
+        HumanDecision (via update_state + invoke(None, ...)) routes onward to
+        execute(placeholder), not back to diagnose."""
         mock_input_check.return_value = {"verdict": "safe", "reason": "stub"}
         mock_router_client = MagicMock()
         mock_router_client.invoke.return_value = json.dumps({"route": "runbooks"})
@@ -251,12 +260,26 @@ class GraphSkeletonTests(unittest.TestCase):
         )
         mock_propose_action_chat_client.return_value = mock_propose_action_client
 
-        graph = build_graph()
-        result = graph.invoke(_initial_state())
+        checkpointer = InMemoryCheckpointSaver()
+        graph = build_graph(checkpointer=checkpointer)
+        config = {"configurable": {"thread_id": "test-thread-1"}}
 
-        self.assertEqual(result["proposed_action"]["side_effecting"], True)
-        self.assertEqual(result["guardrail_output_verdict"]["verdict"], "safe")
-        self.assertIsNone(result["rejection_reason"])
+        paused = graph.invoke(_initial_state(), config=config)
+
+        self.assertEqual(paused["proposed_action"]["side_effecting"], True)
+        self.assertEqual(paused["guardrail_output_verdict"]["verdict"], "safe")
+        self.assertIsNone(paused["rejection_reason"])
+        self.assertIn("__interrupt__", paused)
+        self.assertTrue(checkpointer.exists("test-thread-1"))
+
+        graph.update_state(
+            config, {"human_decision": {"approved": True, "modified_action": None, "note": "go"}}
+        )
+        resumed = graph.invoke(None, config=config)
+
+        self.assertNotIn("__interrupt__", resumed)
+        self.assertEqual(resumed["human_decision"]["approved"], True)
+        self.assertFalse(checkpointer.exists("test-thread-1"))
 
 
 if __name__ == "__main__":
