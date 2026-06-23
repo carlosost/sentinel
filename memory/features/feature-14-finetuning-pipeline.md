@@ -1,7 +1,7 @@
 # Feature 14 — Fine-Tuning Pipeline (Final Roadmap Item)
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
+**Status:** Done
 **PMA sections touched:** ADR-020 (new, retrofit), §3 Pillar 6, §3 Pillar 1, §7
 (resolves Open Question #5, new Open Question), §6 Feature Log, §9 item 14
 
@@ -179,3 +179,88 @@ def test_base_variant_uses_gateway_embedding_client(mock_client_factory):
     """Deterministic Tier."""
     ...
 ```
+
+## Implementation Status
+
+**What was built:**
+- `src/finetuning/export_pairs.py` — `build_finetune_pairs(spans)`, pure: one
+  `{"query", "positive", "negative"}` pair per span, `positive` = `reranked_docs[0]`
+  (already sorted descending by the reranker node, ADR-011), `negative` = the first
+  `retrieved_docs` entry whose `id` did not survive into `reranked_docs`. Raises
+  `ExportPairsError` (never silently skips) on a missing query, no reranked_docs, or
+  no negative candidate available.
+- `src/finetuning/langsmith_spans.py` — `get_retriever_reranker_spans()`, the
+  ADR-021-pattern stand-in for a real `langsmith.Client()` spans fetch; raises
+  `NotImplementedError` (Open Question #15), the same seam tests patch directly.
+- `src/finetuning/ab_eval.py` — `decide_promotion(baseline, candidate, margin=
+  PROMOTION_MARGIN)` (pure, Deterministic Tier) and `run_ab_eval(golden_incidents)`,
+  which calls `_score_variant("base"/"finetuned", ...)` (a `NotImplementedError`
+  stand-in for real `ragas` scoring) and feeds both scores to `decide_promotion`.
+  `PROMOTION_MARGIN = 0.05` is the placeholder value Open Question #14 already
+  tracks.
+- `src/embeddings/finetuned_embeddings.py` — `get_finetuned_embedding_model()`,
+  mirroring `cross_encoder.py`'s `_CrossEncoder` shim exactly: no dependency on
+  `src.gateway.client_factory` at all, `.embed_documents()` raises
+  `NotImplementedError` until Open Question #15's real-package swap.
+- `src/graph/nodes/retriever.py` — gained the `EMBEDDING_MODEL_VARIANT` env-var
+  branch: `"finetuned"` calls `get_finetuned_embedding_model()` instead of
+  `client_factory.get_embedding_client(...)`; unset/`"base"` is unchanged. Both paths
+  produce the same `retrieved_docs` shape (ADR-011), so no downstream node changed.
+- Three new entry-point scripts mirroring `scripts/run_eval.py`'s mechanics-only
+  pattern given this sandbox's lack of `langsmith`/`sentence-transformers`/`ragas`
+  package access (Open Question #15): `scripts/export_finetune_pairs.py`,
+  `scripts/finetune_embedding_model.py`, `scripts/ab_eval_embedding_model.py` — each
+  validates what it can (script wiring, file presence, dataset schema) and reports
+  the sandbox limitation explicitly rather than silently no-op'ing.
+- New tests: `tests/finetuning/test_export_finetune_pairs.py` (7 tests),
+  `tests/finetuning/test_ab_eval_embedding_model.py` (8 tests),
+  `tests/finetuning/test_langsmith_spans.py` (1 test),
+  `tests/embeddings/test_finetuned_embeddings.py` (3 tests),
+  `tests/graph/nodes/test_retriever_model_variant.py` (3 tests, matching both named
+  spec skeletons plus an unset-defaults-to-base regression test).
+
+**Deviations from spec:**
+- The spec's named skeleton file was `tests/finetuning/test_export_finetune_pairs.py`
+  with `mock_langsmith_client`-fixture-style tests; the actual implementation tests
+  `build_finetune_pairs` directly against synthetic span dicts (no client mock
+  needed, since `build_finetune_pairs` is a pure function over already-fetched
+  spans) and separately covers `get_retriever_reranker_spans`'s own shim contract in
+  `test_langsmith_spans.py`. Same coverage intent, split along the same module
+  boundary the implementation actually has.
+- `scripts/finetune_embedding_model.py`'s `main()` exits 1 when
+  `evals/finetune_pairs.jsonl` doesn't exist yet (expected in this sandbox, since
+  `export_finetune_pairs.py` cannot produce a real file without `langsmith`) — this
+  is correct mechanics-validation behavior, not a bug; running the three scripts in
+  sequence in a sandbox with real package access would produce a real pairs file
+  before this script runs.
+
+**New Open Question confirmed, not invented:** Open Question #14 in §7 (fine-tuned
+model promotion margin is a placeholder) was already pre-flagged in the PMA before
+this feature started — no new Open Question number was added, consistent with the
+Feature 11/12/13 pattern.
+
+**Verification:**
+- `python -m unittest discover -s tests -p "test_*.py"` → 190/190 passing (up from
+  168).
+- `bash scripts/lint_gateway_usage.sh` → PASS.
+- `python scripts/export_finetune_pairs.py` → reports the sandbox limitation
+  (Open Question #15), exits 0.
+- `python scripts/finetune_embedding_model.py` → exits 1 (no pairs file — expected,
+  see Deviations above).
+- `python scripts/ab_eval_embedding_model.py` → loads the golden dataset, reports
+  the sandbox limitation, exits 0.
+- `python scripts/run_eval.py` → unaffected, still PASS.
+
+**Definition of Done:**
+- [x] Spec's Conflict Check verified still holds (no re-derivation needed).
+- [x] Implementation matches ADR-020 (corrected data source, promotion margin
+      mechanism, local in-process model-swap).
+- [x] Tests written and passing (Deterministic Tier throughout — pipeline mechanics
+      and config-flag routing; real model-performance delta remains Probabilistic
+      Tier, gated on Open Question #15).
+- [x] Lint green; eval harness unaffected and still green.
+- [x] Feature file Status → Done, this section appended.
+- [x] PROJECT_MEMORY.md updated (ADR-020 implementation-status bullet, Feature Log
+      row, §9 checkbox). Pillar 6/Pillar 1's "Implementation status (Feature 14)"
+      bullets and Open Question #5's resolution marker were already pre-drafted
+      accurately and required no further correction.

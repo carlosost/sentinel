@@ -528,6 +528,22 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   promotion margin's numeric value is a new placeholder (Open Question). Pillar 6's
   prose now accurately describes the real data source.
 - **Status:** Accepted.
+- **Implementation status (Feature 14):** implemented exactly as decided.
+  `src/finetuning/export_pairs.py` (`build_finetune_pairs`) builds one
+  query/positive/negative pair per span from `reranked_docs`/`retrieved_docs`,
+  never a `grade_documents` field; `src/finetuning/langsmith_spans.py` and
+  `src/finetuning/ab_eval.py` (`decide_promotion`/`run_ab_eval`,
+  `PROMOTION_MARGIN = 0.05` placeholder) are the ADR-021-pattern stand-ins for the
+  real `langsmith`/`ragas` calls (Open Question #15). `src/embeddings/
+  finetuned_embeddings.py` mirrors `cross_encoder.py`'s local-model shim exactly,
+  confirming the gateway-scope precedent a third time. `src/graph/nodes/
+  retriever.py` gained the `EMBEDDING_MODEL_VARIANT=base|finetuned` branch; both
+  paths produce the same `retrieved_docs` shape (ADR-011). Three mechanics-only
+  entry-point scripts (`scripts/export_finetune_pairs.py`,
+  `scripts/finetune_embedding_model.py`, `scripts/ab_eval_embedding_model.py`) each
+  report the sandbox's package-access limitation explicitly rather than silently
+  no-op'ing. 190/190 tests passing, lint PASS, eval harness unaffected/PASS. See
+  `/memory/features/feature-14-finetuning-pipeline.md`.
 
 ---
 
@@ -967,7 +983,7 @@ guardrail_output -(safe, post-execution)-> END
 | `feature-11-write-postmortem-node` | `src/graph/nodes/write_postmortem.py` (real `write_postmortem`, ADR-017) replacing `_write_postmortem_placeholder`; drafts a 4-section postmortem (Summary/Root Cause/Action Taken & Outcome/Notes) from diagnosis/action/execution_result via `client_factory.get_chat_client`, reusing `await_human_approval.resolve_action`'s ADR-015 precedence rule rather than re-deriving it; confidence-aware Notes append when `diagnosis_confidence == "low"`; routes via a single static edge into `guardrail_output`'s post-execution branch (ADR-014), closing that branch end-to-end for the first time; `build.py` updated, no `_compat.py` change needed (multiple incoming edges to one node already permitted); 141/141 tests passing via `python3 -m unittest discover -s tests` (141 = 137 carried over from Feature 10 + 4 new) | Phase 4 | **Done** | ADR-017 (new), §3 Pillar 2, §3 Pillar 3, §7 (Open Question #11, already pre-flagged), §9 item 11 |
 | `feature-12-litellm-proxy-hardening` | LiteLLM proxy production config: fallback chains, semantic caching with eval carve-out, per-key rate limits, trace_id-tagged cost logging. 152/152 tests passing (141 carried over from Feature 11 + 11 new: 5 in `test_litellm_production_config.py`, 3 in `test_litellm_config_yaml.py`, 3 in `test_tracing.py`; `test_gateway_compliance.py`'s one existing assertion updated in place, no count change). Lint PASS, eval harness PASS. | Phase 4 | **Done** | ADR-018, ADR-021 addendum (new), §5.3, §3 Pillar 5, §3 Pillar 4, §7 (Open Question #12, already pre-flagged), §9 item 12 |
 | `feature-13-guardrail-unstubbing` | Real Llama Guard 3-8B inference replaces the `guardrail_check()` stub; formalizes `GuardrailVerdict` shape (`verdict`/`reason`/`category`); adds `evals/guardrail_redteam.jsonl` + `src/evals/guardrail_dataset.py`/`guardrail_eval.py` precision/recall scorer wired into `scripts/run_eval.py`; corrects ADR-004's pillar reference and §8.3's `borderline` mention; updated 3 existing graph integration tests to also mock `guardrail_output.guardrail_check` (previously relied on the old stub's hardcoded "safe"). 168/168 tests passing (up from 152). Lint PASS, eval harness PASS. | Phase 4 | **Done** | ADR-019 (new, retrofit), §5.1, §8.3, §3 Pillar 3, §3 Pillar 4, §7 (resolves Open Question #1, Open Question #13 already pre-flagged), §9 item 13 |
-| `feature-14-finetuning-pipeline` | Fine-tuning export/train/A-B-promote pipeline for the embedding model; corrects Pillar 6's data-source prose to retriever/reranker spans; resolves Open Question #5 | Phase 4 | In Progress | ADR-020 (new, retrofit), §3 Pillar 6, §3 Pillar 1, §7 (resolves Open Question #5, new Open Question), §9 item 14 |
+| `feature-14-finetuning-pipeline` | Fine-tuning export/train/A-B-promote pipeline for the embedding model (`src/finetuning/{export_pairs,langsmith_spans,ab_eval}.py`, `src/embeddings/finetuned_embeddings.py`, `scripts/{export_finetune_pairs,finetune_embedding_model,ab_eval_embedding_model}.py`); `retriever` node gains the `EMBEDDING_MODEL_VARIANT=base|finetuned` config-flag branch, confirming the local/non-gateway model precedent a third time (after ADR-011/ADR-016); corrects Pillar 6's data-source prose to retriever/reranker spans; resolves Open Question #5. 190/190 tests passing (up from 168). Lint PASS, eval harness unaffected/PASS. | Phase 4 | **Done** | ADR-020 (new, retrofit), §3 Pillar 6, §3 Pillar 1, §7 (resolves Open Question #5, Open Question #14 already pre-flagged), §9 item 14 |
 
 ---
 
@@ -1375,7 +1391,10 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
 - [x] 13. Replace the `guardrail_check()` stub with real Llama Guard 3-8B inference
       behind the gateway, for both input and output moderation paths. **Done** —
       ADR-019; 168/168 tests pass via `python3 -m unittest discover -s tests`.
-- [ ] 14. Build the fine-tuning pipeline: `scripts/export_finetune_pairs.py` exporting
+- [x] 14. Build the fine-tuning pipeline: `scripts/export_finetune_pairs.py` exporting
       `grade_documents` LangSmith traces into contrastive JSONL pairs, a
       `sentence-transformers` fine-tune of `bge-small-en-v1.5`, and an A/B eval
       against the golden set before promoting it behind a config flag.
+      **Done** — ADR-020 (corrected data source: retriever/reranker spans, not
+      `grade_documents`); 190/190 tests pass via
+      `python3 -m unittest discover -s tests`.
