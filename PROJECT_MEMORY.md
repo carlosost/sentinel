@@ -439,6 +439,18 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   removing the eval carve-out later is a retrofit against this ADR, not a
   transparent tuning change.
 - **Status:** Accepted.
+- **Implementation status (Feature 12):** implemented exactly as decided.
+  `infra/litellm_config.yaml` declares the 7 real aliases actually called in code
+  (`sentinel-router`, `sentinel-grader`, `sentinel-diagnose`, `sentinel-propose-action`,
+  `sentinel-postmortem`, `sentinel-judge`, `sentinel-embedding` — the ADR's own prose
+  example names, `sentinel-chat`/`sentinel-embedding`, were illustrative only) each
+  with a fallback, plus a `sentinel-guardrail` pair reserved/commented for Feature 13.
+  `client_factory.get_chat_client`/`get_embedding_client` merge
+  `metadata={"trace_id": get_current_trace_id()}` into `extra` additively (never
+  clobbering a caller-supplied `metadata` dict's other keys). `evaluator.run_judge`'s
+  one real eval call site now passes `cache={"no-cache": True}`. Behavior is modeled
+  test-side via `MockLiteLLMProxy` (ADR-021 addendum, see below) rather than a real
+  running proxy. See `/memory/features/feature-12-litellm-proxy-hardening.md`.
 
 ### ADR-019: Real Llama Guard 3-8B inference; `GuardrailVerdict` shape; guardrail eval dataset; corrects ADR-004's pillar reference and §8.3's `borderline` mention (Feature 13, retrofit, resolves Open Question #1)
 - **Context:** `guardrail_check()` returned a hardcoded `safe` verdict since Feature
@@ -572,6 +584,26 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   shape) — so this addendum is scoped to the gateway-style factory pattern,
   not the graph engine. Open Question #15's scope grows to include swapping
   this for a real `httpx`-backed client once Docker/PyPI access exists.
+- **Addendum (Feature 12):** two further shims, both new modules rather than
+  extensions of an existing one. `src/observability/tracing.py` stands in for
+  `langsmith.run_helpers.get_current_run_tree()`'s active-run context, using a
+  stdlib `contextvars.ContextVar` (chosen specifically for correctness under
+  nested/concurrent runs, mirroring the real SDK's context-local behavior) —
+  `get_current_trace_id()`/`traced_run()` only model the "what's the active
+  trace_id" surface `client_factory` needs, not the rest of the LangSmith SDK.
+  `src/gateway/litellm_proxy.py`'s `MockLiteLLMProxy` stands in for the real
+  networked `litellm` proxy server `infra/docker-compose.yml` already
+  provisions (no Docker network egress here either, same root cause as the
+  Feature 10 addendum) — it loads the real `infra/litellm_config.yaml` and
+  models fallback routing, semantic caching (with the no-cache override),
+  per-virtual-key rate limiting, and call-log recording against an injected
+  `provider_call` callable, following the same factory/dataclass pattern as
+  `_StagingApiClient`. Unlike `_compat.py`, `client_factory._ChatClient.invoke()`
+  itself is still untouched (still `NotImplementedError`, per Open Question
+  #15) — this feature's scope is proxy *configuration* behavior, not real model
+  invocation. Open Question #15's scope grows to include swapping both for the
+  real `langsmith` SDK and a real running `litellm` proxy, neither of which
+  this shim pair has ever been run against.
 - **Status:** Accepted (provisional — superseded the moment real package access is
   available).
 
@@ -916,7 +948,7 @@ guardrail_output -(safe, post-execution)-> END
 | `feature-09-await-human-approval-node` | `src/graph/nodes/await_human_approval.py` (real `await_human_approval`/`await_human_approval_route`/`resolve_action`, ADR-015); `_compat.py` gains `GraphInterrupt`/`interrupt()`/checkpointer support (ADR-021 addendum); `src/graph/checkpoint.py` (`InMemoryCheckpointSaver` — stdlib stand-in for `PostgresSaver`); formalizes `HumanDecision` TypedDict in `state.py`; `build_graph(checkpointer=...)` wires `await_human_approval -(approved)-> execute`, `-(rejected)-> diagnose`; `tests/graph/test_skeleton.py`'s side-effecting test rewritten as a full interrupt->update_state->resume round trip; restart-survival tested via two graph objects sharing one checkpointer instance, modeling "two processes, one Postgres"; 129/129 tests pass via `python3 -m unittest discover -s tests` (129 = 111 carried over from Feature 08 + 18 new) | Phase 4 | **Done** | ADR-015 (new), ADR-021 (addendum), §5.1, §3 Pillar 2, §7 (Open Question #9 partially de-risked, new Open Question #10), §9 item 9 |
 | `feature-10-execute-node` | `src/graph/nodes/execute.py` (real `execute`/`execute_route`, ADR-016) replacing `_execute_placeholder`; `_action_to_execute` applies ADR-015's `modified_action` precedence via `resolve_action()` when `human_decision` is set, else runs `proposed_action` unchanged; `src/tools/executors.py` (new — `execute_tool`, `ExecutorError`, `get_staging_api_client()` factory/`_StagingApiClient` stand-in for the real `httpx`-backed mock-staging-API call, ADR-021 addendum); pins `execution_result` shape; `build.py` adds `_write_postmortem_placeholder` (roadmap item 11) as `execute`'s new success target, wires `execute -(success)-> write_postmortem`, `-(failure)-> diagnose`; `tests/graph/test_skeleton.py` and `test_hitl_checkpoint_restart.py`'s execute-reaching tests updated to mock the staging client; 137/137 tests passing via `python3 -m unittest discover -s tests` (137 = 129 carried over from Feature 09 + 8 new) | Phase 4 | **Done** | ADR-016 (new), ADR-021 (addendum), §5.1, §3 Pillar 2, §7 (Open Question #3, resolved), §9 item 10 |
 | `feature-11-write-postmortem-node` | `src/graph/nodes/write_postmortem.py` (real `write_postmortem`, ADR-017) replacing `_write_postmortem_placeholder`; drafts a 4-section postmortem (Summary/Root Cause/Action Taken & Outcome/Notes) from diagnosis/action/execution_result via `client_factory.get_chat_client`, reusing `await_human_approval.resolve_action`'s ADR-015 precedence rule rather than re-deriving it; confidence-aware Notes append when `diagnosis_confidence == "low"`; routes via a single static edge into `guardrail_output`'s post-execution branch (ADR-014), closing that branch end-to-end for the first time; `build.py` updated, no `_compat.py` change needed (multiple incoming edges to one node already permitted); 141/141 tests passing via `python3 -m unittest discover -s tests` (141 = 137 carried over from Feature 10 + 4 new) | Phase 4 | **Done** | ADR-017 (new), §3 Pillar 2, §3 Pillar 3, §7 (Open Question #11, already pre-flagged), §9 item 11 |
-| `feature-12-litellm-proxy-hardening` | LiteLLM proxy production config: fallback chains, semantic caching with eval carve-out, per-key rate limits, trace_id-tagged cost logging | Phase 4 | In Progress | ADR-018 (new), §5.3, §3 Pillar 5, §3 Pillar 4, §7 (new Open Question), §9 item 12 |
+| `feature-12-litellm-proxy-hardening` | LiteLLM proxy production config: fallback chains, semantic caching with eval carve-out, per-key rate limits, trace_id-tagged cost logging. 152/152 tests passing (141 carried over from Feature 11 + 11 new: 5 in `test_litellm_production_config.py`, 3 in `test_litellm_config_yaml.py`, 3 in `test_tracing.py`; `test_gateway_compliance.py`'s one existing assertion updated in place, no count change). Lint PASS, eval harness PASS. | Phase 4 | **Done** | ADR-018, ADR-021 addendum (new), §5.3, §3 Pillar 5, §3 Pillar 4, §7 (Open Question #12, already pre-flagged), §9 item 12 |
 | `feature-13-guardrail-unstubbing` | Real Llama Guard 3-8B inference replaces the `guardrail_check()` stub; formalizes `GuardrailVerdict` shape; adds `evals/guardrail_redteam.jsonl`; corrects ADR-004's pillar reference and §8.3's `borderline` mention | Phase 4 | In Progress | ADR-019 (new, retrofit), §5.1, §8.3, §3 Pillar 3, §3 Pillar 4, §7 (resolves Open Question #1, new Open Question), §9 item 13 |
 | `feature-14-finetuning-pipeline` | Fine-tuning export/train/A-B-promote pipeline for the embedding model; corrects Pillar 6's data-source prose to retriever/reranker spans; resolves Open Question #5 | Phase 4 | In Progress | ADR-020 (new, retrofit), §3 Pillar 6, §3 Pillar 1, §7 (resolves Open Question #5, new Open Question), §9 item 14 |
 
@@ -1316,9 +1348,13 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
 - [x] 11. Add the `write_postmortem` node that drafts a postmortem from the diagnosis,
       action, and execution result, then passes it through `guardrail_output` before
       `END`. **Done** — see `/memory/features/feature-11-write-postmortem-node.md`.
-- [ ] 12. Configure the LiteLLM proxy for production behavior: a primary→secondary
+- [x] 12. Configure the LiteLLM proxy for production behavior: a primary→secondary
       fallback chain, Redis-backed semantic caching, and per-API-key rate limits, with
-      cost/usage logging tagged to LangSmith `trace_id`.
+      cost/usage logging tagged to LangSmith `trace_id`. **Done** —
+      `infra/litellm_config.yaml` (ADR-018); `src/observability/tracing.py`
+      (trace_id context); `src/gateway/litellm_proxy.py`'s `MockLiteLLMProxy`
+      (ADR-021 addendum); `client_factory`/`evaluator.py` wired through; 152/152
+      tests pass via `python3 -m unittest discover -s tests`.
 - [ ] 13. Replace the `guardrail_check()` stub with real Llama Guard 3-8B inference
       behind the gateway, for both input and output moderation paths.
 - [ ] 14. Build the fine-tuning pipeline: `scripts/export_finetune_pairs.py` exporting

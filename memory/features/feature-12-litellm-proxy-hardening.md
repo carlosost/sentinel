@@ -1,7 +1,7 @@
 # Feature 12 — LiteLLM Proxy Production Hardening
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
+**Status:** Done
 **PMA sections touched:** ADR-018 (new), §5.3, §3 Pillar 5, §3 Pillar 4, §7 (new Open
 Question), §6 Feature Log, §9 item 12
 
@@ -156,3 +156,89 @@ def test_every_gateway_call_carries_trace_id_metadata(mock_litellm_proxy, mock_l
     """Deterministic Tier. Enforces Project Charter success criterion 4."""
     ...
 ```
+
+## Implementation Status
+
+**What was built:**
+- `infra/litellm_config.yaml` — the real config file (not a docstring example):
+  `model_list` entries for all 7 aliases actually called in code
+  (`sentinel-router`, `sentinel-grader`, `sentinel-diagnose`,
+  `sentinel-propose-action`, `sentinel-postmortem`, `sentinel-judge`,
+  `sentinel-embedding`), each paired with a `-fallback` alias via LiteLLM's
+  native `fallbacks` list, plus a `sentinel-guardrail`/`sentinel-guardrail-fallback`
+  pair reserved (commented, not yet called) for Feature 13.
+  `litellm_settings.cache: true` with Redis semantic-cache params
+  (`similarity_threshold: 0.95`). `general_settings.virtual_keys`: `sentinel-app`,
+  `sentinel-eval`, `sentinel-dev`, each with its own placeholder `rpm_limit`/
+  `max_budget`/`budget_duration`.
+- `src/observability/tracing.py` (new module/package) — `get_current_trace_id()`
+  / `traced_run()` over a `contextvars.ContextVar`, the ADR-021-addendum stand-in
+  for the real LangSmith SDK's active-run context.
+- `src/gateway/litellm_proxy.py` (new) — `MockLiteLLMProxy`: loads the real
+  `infra/litellm_config.yaml`, resolves each alias's fallback chain, and
+  implements `complete()` against an injected `provider_call` callable with
+  fallback-on-exception, an in-memory cache dict honoring a per-call
+  `cache={"no-cache": True}` override, independent per-virtual-key in-memory
+  rate-limit counters, and a `call_log` recording `metadata` (including
+  `trace_id`) for test assertions. This is the Deterministic Tier's stand-in
+  for the real networked `litellm` proxy `docker-compose.yml` already
+  provisions but this sandbox cannot run.
+- `src/gateway/client_factory.py` — `get_chat_client`/`get_embedding_client` now
+  merge `metadata={"trace_id": get_current_trace_id()}` into `extra` via a new
+  `_with_trace_metadata()` helper, additive to any caller-supplied `metadata`.
+- `src/evals/evaluator.py` — `run_judge`'s one real call site now passes
+  `cache={"no-cache": True}` (the eval-determinism carve-out).
+- `tests/evals/test_gateway_compliance.py` — updated the one assertion that
+  pins `run_judge`'s exact `get_chat_client(...)` call to match.
+- `tests/gateway/test_litellm_production_config.py` (new) — the 5 pre-drafted
+  skeletons, all implemented against `MockLiteLLMProxy`.
+- `tests/gateway/test_litellm_config_yaml.py` (new, supplementary) — static
+  validation that every `sentinel-*` alias referenced anywhere in `src/` has a
+  matching `model_list` entry with a fallback, that all three virtual keys
+  exist with positive limits, and that caching is enabled — the structural
+  counterpart to the behavioral tests above.
+- `tests/observability/test_tracing.py` (new, supplementary) — direct unit
+  tests of `traced_run`/`get_current_trace_id`'s context-var contract
+  (default-None, set/restore, sequential-run isolation).
+- `requirements.txt` — added `pyyaml>=6.0` (used by `litellm_proxy.py` to parse
+  the config; confirmed available in this sandbox, unlike most of this
+  project's other declared dependencies).
+
+**Deviations from spec:** none structural. The ADR's own prose used
+`sentinel-chat`/`sentinel-embedding` as illustrative example aliases; the real
+config uses the 7 aliases actually referenced in node code instead (more
+useful, and now enforced by `test_litellm_config_yaml.py` so it can't drift
+silently in the future).
+
+**New Open Question:** none — the rate-limit/budget-cap placeholder concern
+this feature's design phase flagged was already pre-existing as Open Question
+#12 in `PROJECT_MEMORY.md` §7 (confirmed by direct read before writing the
+Feature Log row, applying the same correction discipline Feature 11's Open
+Question #11 mismatch established).
+
+**New ADR-021 addendum:** `src/observability/tracing.py` and
+`src/gateway/litellm_proxy.py` are both new sandbox dependency shims (no
+PyPI/network egress here for the real `langsmith` SDK or a running `litellm`
+proxy) — recorded as an ADR-021 addendum in `PROJECT_MEMORY.md`, growing Open
+Question #15's scope.
+
+**Verification:**
+- `python3 -m unittest discover -s tests -p "test_*.py"` → 152/152 passing
+  (141 carried over from Feature 11 + 11 new).
+- `bash scripts/lint_gateway_usage.sh` → PASS.
+- `python scripts/run_eval.py` → PASS (harness mechanics only, no quality
+  baseline — unchanged caveat from prior features).
+
+**Definition of Done:**
+- [x] Spec conflict-checked against every existing ADR/contract.
+- [x] New ADR (ADR-018) recorded, `Status: Accepted`.
+- [x] Gherkin scenarios match the spec.
+- [x] All 5 pre-drafted PyTest skeletons implemented and passing, plus 2
+      supplementary test files.
+- [x] Implementation matches the spec; no undocumented deviation.
+- [x] Full deterministic suite green; lint green; eval harness mechanics green.
+- [x] `PROJECT_MEMORY.md` updated (ADR-018 implementation-status bullet,
+      ADR-021 addendum, Feature Log row, §9 checkbox). §3 Pillar 4/5
+      implementation-status bullets were already accurately pre-drafted —
+      confirmed correct on read, no edit needed.
+- [x] This file's Status marked Done.

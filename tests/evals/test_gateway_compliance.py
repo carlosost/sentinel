@@ -31,7 +31,9 @@ class GatewayComplianceTests(unittest.TestCase):
 
         result = run_judge(INCIDENT)
 
-        mock_get_chat_client.assert_called_once_with(model="sentinel-judge")
+        mock_get_chat_client.assert_called_once_with(
+            model="sentinel-judge", cache={"no-cache": True}
+        )
         mock_client.invoke.assert_called_once()
         self.assertTrue(result["passed"])
         self.assertEqual(result["incident_id"], "INC-TEST")
