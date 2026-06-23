@@ -1,26 +1,27 @@
 """Deterministic Tier — integration-style test of the real entry path
 (guardrail_input -> router -> retriever -> reranker -> grade_documents <-> router
 loop -> diagnose -> propose_action -> guardrail_output -> {reject |
-await_human_approval | execute} -> {write_postmortem(placeholder) |
-diagnose}), superseding Feature 01's entry->END smoke test now that real
-nodes exist (ADR-009's Blast Radius note). guardrail_check, router's
+await_human_approval | execute} -> {write_postmortem -> guardrail_output ->
+END | diagnose}), superseding Feature 01's entry->END smoke test now that
+real nodes exist (ADR-009's Blast Radius note). guardrail_check, router's
 classification call, retriever's embedding call, grade_documents' grading
-call, diagnose's call, propose_action's call, and (as of Feature 10) the
-mock staging API client are all mocked; the default (empty) document store
-means retriever returns zero candidates and reranker short-circuits without
-touching the cross-encoder. This never asserts moderation, routing,
-retrieval, grading, diagnosis, proposal, or execution accuracy — only the
-graph's wiring/routing contract
-(ADR-010/ADR-011/ADR-012/ADR-013/ADR-014/ADR-015/ADR-016's Pillar Impact
-notes), including that the self-RAG cycle (Feature 06's `_compat.py`
+call, diagnose's call, propose_action's call, the mock staging API client
+(Feature 10), and (as of Feature 11) write_postmortem's drafting call are
+all mocked; the default (empty) document store means retriever returns zero
+candidates and reranker short-circuits without touching the cross-encoder.
+This never asserts moderation, routing, retrieval, grading, diagnosis,
+proposal, execution, or postmortem-narrative accuracy — only the graph's
+wiring/routing contract
+(ADR-010/ADR-011/ADR-012/ADR-013/ADR-014/ADR-015/ADR-016/ADR-017's Pillar
+Impact notes), including that the self-RAG cycle (Feature 06's `_compat.py`
 addendum) and the HITL interrupt/resume cycle (Feature 09's addendum)
 actually execute end-to-end, not just compile. The side-effecting test below
 now passes a checkpointer + thread_id config and a full
 interrupt-then-resume-then-route-to-execute round trip, since
 `await_human_approval` (Feature 09) is a real interrupting node, not a
-placeholder, and `execute` (Feature 10) is now real too — reaching
-`write_postmortem`'s still-a-placeholder node on a mocked-successful
-execution."""
+placeholder, `execute` (Feature 10) is now real too, and (Feature 11) the
+run now reaches a real `write_postmortem` and the post-execution
+`guardrail_output` branch all the way to END."""
 
 import json
 import unittest
@@ -53,6 +54,7 @@ def _initial_state(raw_alert: str = "disk usage at 95% on db-primary") -> dict:
 
 
 class GraphSkeletonTests(unittest.TestCase):
+    @patch("src.graph.nodes.write_postmortem.get_chat_client")
     @patch("src.tools.executors.get_staging_api_client")
     @patch("src.graph.nodes.propose_action.get_chat_client")
     @patch("src.graph.nodes.diagnose.get_chat_client")
@@ -60,7 +62,7 @@ class GraphSkeletonTests(unittest.TestCase):
     @patch("src.graph.nodes.retriever.get_embedding_client")
     @patch("src.graph.nodes.router.get_chat_client")
     @patch("src.graph.nodes.guardrail_input.guardrail_check")
-    def test_graph_runs_full_safe_path_high_relevance_reaches_execute_and_write_postmortem_placeholder(
+    def test_graph_runs_full_safe_path_high_relevance_reaches_execute_and_write_postmortem(
         self,
         mock_check,
         mock_router_chat_client,
@@ -69,11 +71,21 @@ class GraphSkeletonTests(unittest.TestCase):
         mock_diagnose_chat_client,
         mock_propose_action_chat_client,
         mock_get_staging_api_client,
+        mock_postmortem_chat_client,
     ):
         mock_check.return_value = {"verdict": "safe", "reason": "stub"}
         mock_staging_client = MagicMock()
         mock_staging_client.call.return_value = {"success": True, "output": "fetched logs"}
         mock_get_staging_api_client.return_value = mock_staging_client
+        mock_postmortem_client = MagicMock()
+        mock_postmortem_client.invoke.return_value = json.dumps(
+            {
+                "postmortem_draft": (
+                    "Summary\n...\nRoot Cause\n...\nAction Taken & Outcome\n...\nNotes\n..."
+                )
+            }
+        )
+        mock_postmortem_chat_client.return_value = mock_postmortem_client
         mock_router_client = MagicMock()
         mock_router_client.invoke.return_value = json.dumps({"route": "runbooks"})
         mock_router_chat_client.return_value = mock_router_client
@@ -116,7 +128,7 @@ class GraphSkeletonTests(unittest.TestCase):
         self.assertEqual(result["guardrail_output_verdict"]["verdict"], "safe")
         self.assertIsNone(result["rejection_reason"])
         # execute (Feature 10) ran against the mocked staging API and
-        # succeeded -> routed to write_postmortem(placeholder), reaching END.
+        # succeeded -> routed to write_postmortem.
         self.assertEqual(
             result["execution_result"],
             {
@@ -128,6 +140,10 @@ class GraphSkeletonTests(unittest.TestCase):
             },
         )
         mock_staging_client.call.assert_called_once_with("fetch_additional_logs", {})
+        # write_postmortem (Feature 11) drafted a postmortem -> routed to
+        # guardrail_output's post-execution branch -> safe (stub) -> END.
+        self.assertIsNotNone(result["postmortem_draft"])
+        self.assertEqual(result["guardrail_output_verdict"]["verdict"], "safe")
 
     @patch("src.graph.nodes.propose_action.get_chat_client")
     @patch("src.graph.nodes.diagnose.get_chat_client")
@@ -243,6 +259,7 @@ class GraphSkeletonTests(unittest.TestCase):
         self.assertEqual(result["guardrail_output_verdict"]["verdict"], "unsafe")
         self.assertEqual(result["rejection_reason"], "unsafe-remediation")
 
+    @patch("src.graph.nodes.write_postmortem.get_chat_client")
     @patch("src.tools.executors.get_staging_api_client")
     @patch("src.graph.nodes.propose_action.get_chat_client")
     @patch("src.graph.nodes.diagnose.get_chat_client")
@@ -259,6 +276,7 @@ class GraphSkeletonTests(unittest.TestCase):
         mock_diagnose_chat_client,
         mock_propose_action_chat_client,
         mock_get_staging_api_client,
+        mock_postmortem_chat_client,
     ):
         """Proves the safe + side_effecting branch (ADR-014) reaches the real
         `await_human_approval` node (Feature 09/ADR-015), which interrupts and
@@ -286,6 +304,15 @@ class GraphSkeletonTests(unittest.TestCase):
             {"tool": "restart_service", "args": {}}
         )
         mock_propose_action_chat_client.return_value = mock_propose_action_client
+        mock_postmortem_client = MagicMock()
+        mock_postmortem_client.invoke.return_value = json.dumps(
+            {
+                "postmortem_draft": (
+                    "Summary\n...\nRoot Cause\n...\nAction Taken & Outcome\n...\nNotes\n..."
+                )
+            }
+        )
+        mock_postmortem_chat_client.return_value = mock_postmortem_client
 
         checkpointer = InMemoryCheckpointSaver()
         graph = build_graph(checkpointer=checkpointer)
@@ -311,6 +338,10 @@ class GraphSkeletonTests(unittest.TestCase):
         # the mocked staging API and succeeded.
         self.assertEqual(resumed["execution_result"]["success"], True)
         mock_staging_client.call.assert_called_once_with("restart_service", {})
+        # write_postmortem (Feature 11) drafted a postmortem -> routed to
+        # guardrail_output's post-execution branch -> safe (stub) -> END.
+        self.assertIsNotNone(resumed["postmortem_draft"])
+        self.assertEqual(resumed["guardrail_output_verdict"]["verdict"], "safe")
 
 
 if __name__ == "__main__":

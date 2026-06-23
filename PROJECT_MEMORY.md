@@ -404,6 +404,17 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
 - **Consequences:** Establishes what "the postmortem" actually contains; changing the
   section structure later is a retrofit against this ADR.
 - **Status:** Accepted.
+- **Implementation status (Feature 11):** implemented exactly as decided —
+  `write_postmortem` reuses `await_human_approval.resolve_action`'s ADR-015
+  precedence rule (guarded by `human_decision is not None`, the same "compute once,
+  consume once" pattern `execute` already established) rather than re-deriving "which
+  action was actually taken"; the confidence-aware Notes append is a deterministic
+  post-processing string append, not left to model prose alone. Routes via a single
+  static edge (no `write_postmortem_route` function exists — confirmed
+  `guardrail_output` may have multiple incoming static edges with no `_compat.py`
+  change, since the shim's edge-uniqueness constraint only applies to a node's
+  outgoing side). See `/memory/features/feature-11-write-postmortem-node.md`'s
+  Implementation Status for detail.
 
 ### ADR-018: LiteLLM proxy production configuration — fallback, caching with an eval carve-out, per-key rate limits, trace_id propagation (Feature 12)
 - **Context:** ADR-003 named fallback/caching/rate-limiting as the gateway's payoff
@@ -680,9 +691,15 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   is now end-to-end verifiable. Implemented against an ADR-021 addendum
   (`src/tools/executors.get_staging_api_client()` — a `client_factory`-style
   stdlib stand-in for the real `httpx`-backed call, no Docker/PyPI in this
-  sandbox); routes `-(success)-> write_postmortem` (still
-  `_write_postmortem_placeholder`, roadmap item 11) / `-(failure)-> diagnose`.
+  sandbox); routes `-(success)-> write_postmortem` (roadmap item 11, then still
+  a placeholder) / `-(failure)-> diagnose`.
   See `/memory/features/feature-10-execute-node.md`.
+- **Implementation status (Feature 11):** `write_postmortem` (ADR-017) replaces
+  `_write_postmortem_placeholder`, closing the HITL/execution tail end-to-end for
+  the first time: both the read-only and the approved-side-effecting branches now
+  run all the way through `execute -> write_postmortem -> guardrail_output -> END`
+  with a real postmortem draft, not just a real interrupt/resume/dispatch. See
+  `/memory/features/feature-11-write-postmortem-node.md`.
 
 ### Pillar 3 — Guardrails
 - **Library:** Llama Guard 3-8B, served as a model behind the LiteLLM gateway (so it is
@@ -898,7 +915,7 @@ guardrail_output -(safe, post-execution)-> END
 | `feature-08-guardrail-output-node` | Real `guardrail_output` node + `guardrail_output_route` (`src/graph/nodes/guardrail_output.py`), wired to replace `_guardrail_output_placeholder`; one function pair serves both ADR-014 call sites, distinguished via `execution_result`; added `_await_human_approval_placeholder`/`_execute_placeholder` (roadmap items 9-10) as new routing targets; **found and fixed a pre-existing bug** in `reject.py` (it picked `guardrail_input_verdict` by truthiness rather than checking which verdict was actually `"unsafe"`, so a safe input verdict was silently shadowing a later unsafe output verdict's reason) — fixed with a regression test; 111/111 tests passing via `python3 -m unittest discover -s tests` (up from 101) | Phase 4 | **Done** | ADR-014 (confirmed, no amendment), §5.2, §3 Pillar 3, §7 (Open Question #6, resolved), §9 item 8 |
 | `feature-09-await-human-approval-node` | `src/graph/nodes/await_human_approval.py` (real `await_human_approval`/`await_human_approval_route`/`resolve_action`, ADR-015); `_compat.py` gains `GraphInterrupt`/`interrupt()`/checkpointer support (ADR-021 addendum); `src/graph/checkpoint.py` (`InMemoryCheckpointSaver` — stdlib stand-in for `PostgresSaver`); formalizes `HumanDecision` TypedDict in `state.py`; `build_graph(checkpointer=...)` wires `await_human_approval -(approved)-> execute`, `-(rejected)-> diagnose`; `tests/graph/test_skeleton.py`'s side-effecting test rewritten as a full interrupt->update_state->resume round trip; restart-survival tested via two graph objects sharing one checkpointer instance, modeling "two processes, one Postgres"; 129/129 tests pass via `python3 -m unittest discover -s tests` (129 = 111 carried over from Feature 08 + 18 new) | Phase 4 | **Done** | ADR-015 (new), ADR-021 (addendum), §5.1, §3 Pillar 2, §7 (Open Question #9 partially de-risked, new Open Question #10), §9 item 9 |
 | `feature-10-execute-node` | `src/graph/nodes/execute.py` (real `execute`/`execute_route`, ADR-016) replacing `_execute_placeholder`; `_action_to_execute` applies ADR-015's `modified_action` precedence via `resolve_action()` when `human_decision` is set, else runs `proposed_action` unchanged; `src/tools/executors.py` (new — `execute_tool`, `ExecutorError`, `get_staging_api_client()` factory/`_StagingApiClient` stand-in for the real `httpx`-backed mock-staging-API call, ADR-021 addendum); pins `execution_result` shape; `build.py` adds `_write_postmortem_placeholder` (roadmap item 11) as `execute`'s new success target, wires `execute -(success)-> write_postmortem`, `-(failure)-> diagnose`; `tests/graph/test_skeleton.py` and `test_hitl_checkpoint_restart.py`'s execute-reaching tests updated to mock the staging client; 137/137 tests passing via `python3 -m unittest discover -s tests` (137 = 129 carried over from Feature 09 + 8 new) | Phase 4 | **Done** | ADR-016 (new), ADR-021 (addendum), §5.1, §3 Pillar 2, §7 (Open Question #3, resolved), §9 item 10 |
-| `feature-11-write-postmortem-node` | `write_postmortem` node; drafts a 4-section postmortem from diagnosis/action/execution_result, confidence-aware notes, into `guardrail_output`'s post-execution branch | Phase 4 | In Progress | ADR-017 (new), §3 Pillar 3, §7 (new Open Question), §9 item 11 |
+| `feature-11-write-postmortem-node` | `src/graph/nodes/write_postmortem.py` (real `write_postmortem`, ADR-017) replacing `_write_postmortem_placeholder`; drafts a 4-section postmortem (Summary/Root Cause/Action Taken & Outcome/Notes) from diagnosis/action/execution_result via `client_factory.get_chat_client`, reusing `await_human_approval.resolve_action`'s ADR-015 precedence rule rather than re-deriving it; confidence-aware Notes append when `diagnosis_confidence == "low"`; routes via a single static edge into `guardrail_output`'s post-execution branch (ADR-014), closing that branch end-to-end for the first time; `build.py` updated, no `_compat.py` change needed (multiple incoming edges to one node already permitted); 141/141 tests passing via `python3 -m unittest discover -s tests` (141 = 137 carried over from Feature 10 + 4 new) | Phase 4 | **Done** | ADR-017 (new), §3 Pillar 2, §3 Pillar 3, §7 (Open Question #11, already pre-flagged), §9 item 11 |
 | `feature-12-litellm-proxy-hardening` | LiteLLM proxy production config: fallback chains, semantic caching with eval carve-out, per-key rate limits, trace_id-tagged cost logging | Phase 4 | In Progress | ADR-018 (new), §5.3, §3 Pillar 5, §3 Pillar 4, §7 (new Open Question), §9 item 12 |
 | `feature-13-guardrail-unstubbing` | Real Llama Guard 3-8B inference replaces the `guardrail_check()` stub; formalizes `GuardrailVerdict` shape; adds `evals/guardrail_redteam.jsonl`; corrects ADR-004's pillar reference and §8.3's `borderline` mention | Phase 4 | In Progress | ADR-019 (new, retrofit), §5.1, §8.3, §3 Pillar 3, §3 Pillar 4, §7 (resolves Open Question #1, new Open Question), §9 item 13 |
 | `feature-14-finetuning-pipeline` | Fine-tuning export/train/A-B-promote pipeline for the embedding model; corrects Pillar 6's data-source prose to retriever/reranker spans; resolves Open Question #5 | Phase 4 | In Progress | ADR-020 (new, retrofit), §3 Pillar 6, §3 Pillar 1, §7 (resolves Open Question #5, new Open Question), §9 item 14 |
@@ -1296,9 +1313,9 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
       staging API (resolved Open Question #3 via ADR-016), routing failures back to
       `diagnose` and successes to `write_postmortem`. **Done** — see
       `/memory/features/feature-10-execute-node.md`.
-- [ ] 11. Add the `write_postmortem` node that drafts a postmortem from the diagnosis,
+- [x] 11. Add the `write_postmortem` node that drafts a postmortem from the diagnosis,
       action, and execution result, then passes it through `guardrail_output` before
-      `END`.
+      `END`. **Done** — see `/memory/features/feature-11-write-postmortem-node.md`.
 - [ ] 12. Configure the LiteLLM proxy for production behavior: a primary→secondary
       fallback chain, Redis-backed semantic caching, and per-API-key rate limits, with
       cost/usage logging tagged to LangSmith `trace_id`.

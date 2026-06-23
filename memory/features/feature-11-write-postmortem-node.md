@@ -1,7 +1,7 @@
 # Feature 11 — `write_postmortem` Node
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
+**Status:** Done
 **PMA sections touched:** ADR-017 (new), §3 Pillar 3, §7 (new Open Question), §6
 Feature Log, §9 item 11
 
@@ -117,3 +117,70 @@ def test_write_postmortem_routes_to_guardrail_output():
     """Deterministic Tier."""
     ...
 ```
+
+## Implementation Status
+
+**What was built:**
+- `src/graph/nodes/write_postmortem.py` (new): `write_postmortem(state)` — one LLM
+  call via `client_factory.get_chat_client(model="sentinel-postmortem")`, JSON-parsed
+  with `WritePostmortemError` on missing/invalid `postmortem_draft` (the established
+  "never silently default" discipline). `_action_taken(state)` reuses
+  `await_human_approval.resolve_action`'s ADR-015 precedence rule (`modified_action`
+  over `proposed_action`), guarded by `human_decision is not None` the same way
+  `execute._action_to_execute` is — not re-derived. Confidence-aware Notes append
+  is a deterministic post-processing step (string append), not left solely to the
+  model's own prose, so the structural contract in ADR-017 holds even if a
+  completion's prose omits it. No `write_postmortem_route` function exists — the
+  node always routes via a single static edge, matching the Gherkin's fourth
+  scenario.
+- `src/graph/build.py`: docstring's Feature 10 paragraph extended with Feature 11's
+  paragraph; `_write_postmortem_placeholder` removed; `write_postmortem` imported
+  and wired as the real node; the placeholder's `write_postmortem -> END` static
+  edge replaced with the real `write_postmortem -> guardrail_output` edge (the
+  post-execution call site ADR-014 designed and ADR-017 now makes reachable).
+  Confirmed via a full re-read of `src/graph/_compat.py` that the shim's
+  single-outgoing-edge constraint applies only to a node's *source* side — a node
+  may be the *target* of multiple incoming edges from different sources, so
+  `guardrail_output` now correctly has two incoming static edges
+  (`propose_action -> guardrail_output` and `write_postmortem -> guardrail_output`)
+  with no shim change required.
+- `tests/graph/nodes/test_write_postmortem.py` (new) — 4 tests matching the spec's
+  exact pre-drafted skeleton names.
+- `tests/graph/test_skeleton.py` — both tests that previously stopped at
+  `execute`/the placeholder (renamed
+  `test_graph_runs_full_safe_path_high_relevance_reaches_execute_and_write_postmortem_placeholder`
+  -> `..._reaches_execute_and_write_postmortem`) now add a
+  `@patch("src.graph.nodes.write_postmortem.get_chat_client")` mock and assert
+  `postmortem_draft` is set and the second (post-execution) `guardrail_output_verdict`
+  reads "safe" before reaching `END`. Module docstring updated to describe the full
+  `write_postmortem -> guardrail_output -> END` tail.
+- `tests/graph/test_hitl_checkpoint_restart.py` — the restart test gets the same
+  `write_postmortem.get_chat_client` patch and a `postmortem_draft is not None`
+  assertion on the resumed state (the "second process" reaches `write_postmortem`
+  too).
+
+**Deviations from spec:** none structural. The Gherkin/PyTest skeletons didn't
+specify exact mock-arg shapes; tests assert section-header substring presence
+(`assertIn`) per §8.2's narrative-quality-is-Probabilistic-Tier discipline, never
+`==` against full draft text.
+
+**New Open Question added to PROJECT_MEMORY.md §7** (per this feature's own Blast
+Radius note, not resolved here): no retry cap exists on `execute -(failure)->
+diagnose`, unlike the self-RAG loop's bounded `retry_count < 2` (ADR-012).
+
+**Verification:**
+- `python -m unittest discover -s tests -p "test_*.py"`: 141/141 passing.
+- `bash scripts/lint_gateway_usage.sh`: PASS.
+- `python scripts/run_eval.py`: PASS (harness mechanics only, no quality baseline
+  yet — unchanged caveat carried from Feature 02).
+
+**Definition of Done:**
+- [x] Conflict Check confirmed authoritative (no skeleton correction needed).
+- [x] ADR-017 implemented as specified.
+- [x] Gherkin scenarios covered by PyTest skeletons, names matching exactly.
+- [x] `guardrail_output.py` confirmed to need zero changes.
+- [x] `build.py` wired: real node, real edge, placeholder removed.
+- [x] Full test suite green, lint green, eval harness green.
+- [x] New Open Question flagged in PMA (not solved, not deleted-then-forgotten).
+- [x] PROJECT_MEMORY.md Feature Log row, ADR-017 status, §3 Pillar 3, §9 checkbox
+  updated.
