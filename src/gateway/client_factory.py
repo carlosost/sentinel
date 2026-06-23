@@ -26,6 +26,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from src.observability.tracing import get_current_trace_id
+
 #: Read once per process; tests override via monkeypatch/env, never by importing a
 #: provider SDK directly.
 _DEFAULT_PROXY_URL_ENV = "LITELLM_PROXY_URL"
@@ -95,6 +97,20 @@ def _virtual_key() -> Optional[str]:
     return os.environ.get(_DEFAULT_API_KEY_ENV)
 
 
+def _with_trace_metadata(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """ADR-018: every gateway request carries `metadata={"trace_id": ...}` from
+    the active LangSmith run (`src.observability.tracing`), so the proxy's
+    cost/usage logs can be joined against LangSmith traces (Project Charter
+    success criterion 4). A caller-supplied `metadata` dict is merged with,
+    not overwritten by, the trace_id — `trace_id` itself is never clobbered by
+    a caller's own metadata key of the same name, since this is the one
+    contract ADR-018 pins. Outside any traced run, `trace_id` is simply
+    `None` — never an error (see `get_current_trace_id`'s docstring)."""
+    metadata = dict(kwargs.get("metadata") or {})
+    metadata.setdefault("trace_id", get_current_trace_id())
+    return {**kwargs, "metadata": metadata}
+
+
 def get_chat_client(model: str, **kwargs) -> _ChatClient:
     """Construct a chat-completion client routed through the LiteLLM proxy.
 
@@ -103,13 +119,14 @@ def get_chat_client(model: str, **kwargs) -> _ChatClient:
             resolved to a real provider model + fallback chain by
             `infra/litellm_config.yaml` (ADR-018) — never a raw provider model
             string passed straight to a provider SDK.
-        **kwargs: forwarded to the underlying client (e.g. `temperature`).
+        **kwargs: forwarded to the underlying client (e.g. `temperature`,
+            `cache={"no-cache": True}` for the eval-determinism carve-out).
     """
     return _ChatClient(
         model_name=model,
         base_url=_proxy_base_url(),
         api_key=_virtual_key() or "unset",
-        extra=kwargs,
+        extra=_with_trace_metadata(kwargs),
     )
 
 
@@ -123,5 +140,5 @@ def get_embedding_client(model: str, **kwargs) -> _EmbeddingClient:
         model=model,
         base_url=_proxy_base_url(),
         api_key=_virtual_key() or "unset",
-        extra=kwargs,
+        extra=_with_trace_metadata(kwargs),
     )

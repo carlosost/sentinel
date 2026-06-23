@@ -1,0 +1,112 @@
+# LiteLLM proxy production configuration (ADR-018, Feature 12).
+#
+# Every alias below is one actually referenced by `model=...` in src/graph/nodes/
+# or src/evals/ (grep "get_chat_client(model=\"sentinel-" / "get_embedding_client").
+# client_factory.py passes these alias names straight through to the proxy — it
+# never sees or constructs a raw provider model string (ADR-003).
+#
+# `sentinel-guardrail` is reserved for roadmap item 13 (Feature 13's Llama Guard
+# unstubbing) — listed now so the config doesn't need a second retrofit just to
+# add an alias name; no node calls it yet.
+
+model_list:
+  - model_name: sentinel-router
+    litellm_params:
+      model: openai/gpt-4o-mini
+      fallbacks: ["sentinel-router-fallback"]
+  - model_name: sentinel-router-fallback
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-20241022
+
+  - model_name: sentinel-grader
+    litellm_params:
+      model: openai/gpt-4o-mini
+      fallbacks: ["sentinel-grader-fallback"]
+  - model_name: sentinel-grader-fallback
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-20241022
+
+  - model_name: sentinel-diagnose
+    litellm_params:
+      model: openai/gpt-4o
+      fallbacks: ["sentinel-diagnose-fallback"]
+  - model_name: sentinel-diagnose-fallback
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+
+  - model_name: sentinel-propose-action
+    litellm_params:
+      model: openai/gpt-4o
+      fallbacks: ["sentinel-propose-action-fallback"]
+  - model_name: sentinel-propose-action-fallback
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+
+  - model_name: sentinel-postmortem
+    litellm_params:
+      model: openai/gpt-4o-mini
+      fallbacks: ["sentinel-postmortem-fallback"]
+  - model_name: sentinel-postmortem-fallback
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-20241022
+
+  - model_name: sentinel-judge
+    litellm_params:
+      model: openai/gpt-4o
+      fallbacks: ["sentinel-judge-fallback"]
+  - model_name: sentinel-judge-fallback
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+
+  - model_name: sentinel-embedding
+    litellm_params:
+      model: openai/text-embedding-3-small
+      fallbacks: ["sentinel-embedding-fallback"]
+  - model_name: sentinel-embedding-fallback
+    litellm_params:
+      model: cohere/embed-english-v3.0
+
+  # Reserved for Feature 13 (roadmap item 13) — not yet called by any node.
+  - model_name: sentinel-guardrail
+    litellm_params:
+      model: together_ai/meta-llama/Meta-Llama-Guard-3-8B
+      fallbacks: ["sentinel-guardrail-fallback"]
+  - model_name: sentinel-guardrail-fallback
+    litellm_params:
+      model: openai/omni-moderation-latest
+
+# Redis-backed semantic caching, proxy-wide for application traffic. Any
+# individual request can override this with `cache={"no-cache": true}` —
+# the eval-determinism carve-out (ADR-018/ADR-005) — src/evals/evaluator.py
+# is the one real call site that sets it today.
+litellm_settings:
+  cache: true
+  cache_params:
+    type: redis
+    host: os.environ/REDIS_HOST
+    port: os.environ/REDIS_PORT
+    ttl: 3600
+    # Semantic (embedding-similarity) cache, not exact-match-only — repeated
+    # near-duplicate prompts within the same alias are still cache-eligible.
+    mode: semantic
+    similarity_threshold: 0.95
+
+# Three virtual keys (ADR-018): sentinel-app/sentinel-eval/sentinel-dev, each
+# with an independent rate-limit/budget so a `make eval` run can never starve
+# application traffic of rate-limit headroom (and vice versa). Numeric caps
+# below are placeholders pending real usage data — tracked as Open Question
+# #12 in PROJECT_MEMORY.md §7, not asserted as "correct" by any test.
+general_settings:
+  virtual_keys:
+    - key_alias: sentinel-app
+      rpm_limit: 600
+      budget_duration: 30d
+      max_budget: 200.0
+    - key_alias: sentinel-eval
+      rpm_limit: 120
+      budget_duration: 30d
+      max_budget: 50.0
+    - key_alias: sentinel-dev
+      rpm_limit: 60
+      budget_duration: 30d
+      max_budget: 20.0

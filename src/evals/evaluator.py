@@ -8,6 +8,12 @@ The judge's own LLM call is constructed via client_factory.get_chat_client(),
 never a direct provider SDK import — this is the same gateway requirement
 every other model call in the project follows (ADR-003/006), and it applies to
 the eval harness itself, not just graph nodes.
+
+ADR-018 (Feature 12): this is the one real eval-harness LLM call site, so it is
+the one call site that must set `cache={"no-cache": True}` — the eval-
+determinism carve-out that keeps semantic caching (ADR-018) from silently
+masking a live model's current behavior behind a stale cached response during
+an eval run (the ADR-005 conflict risk ADR-018 identified and resolved).
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ def run_judge(
     kwargs = {} if template_path is None else {"template_path": template_path}
     prompt = render_judge_prompt(incident, proposed, **kwargs)
 
-    client = get_chat_client(model="sentinel-judge")
+    client = get_chat_client(model="sentinel-judge", cache={"no-cache": True})
     raw_response = client.invoke(prompt)
     verdicts = json.loads(raw_response)
 
