@@ -1,8 +1,8 @@
 # Feature 10 — `execute` Node
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
-**PMA sections touched:** ADR-016 (new), §5.1, §3 Pillar 2, §7 (resolves Open
+**Status:** Done
+**PMA sections touched:** ADR-016 (new), ADR-021 (addendum), §5.1, §3 Pillar 2, §7 (resolves Open
 Question #3), §6 Feature Log, §9 item 10
 
 ## Feature Description
@@ -136,3 +136,84 @@ def test_execute_never_calls_gateway(mock_client_factory):
     execution is not a gateway-mediated call."""
     ...
 ```
+
+## Implementation Status
+
+**Status: Done.**
+
+### What was built
+- `src/tools/executors.py` (new): `ExecutorError`, `_StagingApiClient`,
+  `get_staging_api_client()` factory, `execute_tool(tool, args)`. Validates the
+  tool against `src/tools/registry.py` before any call (unknown tool ->
+  `ExecutorError`, never silently dispatched); normalizes both a mocked
+  success/error response *and* a raised client exception into
+  `execution_result`'s pinned shape
+  (`{"tool", "args", "success", "output", "error"}`) — a client exception is
+  treated as a normal failure-path outcome (routes to `diagnose`), not a
+  graph-crashing error.
+- `src/graph/nodes/execute.py` (new): `execute(state)`, `execute_route(state)`,
+  `ROUTE_SUCCESS`/`ROUTE_FAILURE`. `_action_to_execute()` applies ADR-015's
+  `modified_action` precedence via `await_human_approval.resolve_action()`
+  when `human_decision` is set (the approved-after-HITL path), otherwise
+  executes `proposed_action` unchanged (the safe+read-only path that never
+  passes through `await_human_approval`).
+- `src/graph/build.py`: `_execute_placeholder` replaced with the real
+  `execute` node; added `_write_postmortem_placeholder` (roadmap item 11,
+  Feature 11) so `execute`'s success edge has a real target to land on;
+  wired `execute -(success)-> write_postmortem`, `execute -(failure)->
+  diagnose` via `add_conditional_edges`.
+- Tests: `tests/graph/nodes/test_execute.py` (new, 4 tests matching the
+  spec's skeleton names exactly), `tests/tools/test_executors.py` (new, 4
+  tests covering `execute_tool` in isolation: success normalization, error
+  normalization, exception normalization, unknown-tool hard-fail). Updated
+  `tests/graph/test_skeleton.py` (both tests that reach `execute` now mock
+  `get_staging_api_client` and assert `execution_result`) and
+  `tests/graph/test_hitl_checkpoint_restart.py`'s resume test (same).
+
+### Deviations from spec (and why)
+1. **Mock staging API is an in-process stdlib stand-in, not a real
+   `httpx`-backed call to a `mock-staging-api` docker-compose service.**
+   ADR-016's literal design requires `httpx` and a Docker daemon to run the
+   stub service; this sandbox has no PyPI egress (confirmed again this
+   feature) and no Docker daemon (standing ADR-021 constraint). Followed the
+   exact precedent `client_factory.get_chat_client`/`get_embedding_client`
+   set: a factory function (`get_staging_api_client()`) returning a dataclass
+   whose `.call()` raises `NotImplementedError` for the real path, trivially
+   monkeypatched in tests. Logged as a new ADR-021 addendum (see below) — not
+   a silent substitution.
+2. **`execute_tool` catches and normalizes client exceptions into
+   `execution_result.success = False`**, rather than only normalizing
+   pre-shaped error dicts as the Gherkin's literal phrasing
+   ("mock-staging-api is mocked to return an error") suggests. This is a
+   superset, not a contradiction: a real network failure must route to
+   `diagnose` exactly like a mocked error response does, so the node's
+   contract holds either way. Both forms are tested (`test_executors.py`'s
+   `test_error_response_is_normalized_with_error_message` and
+   `test_client_exception_is_normalized_into_failure_not_raised`).
+3. **No actual `infra/docker-compose.yml` `mock-staging-api` service or
+   failure-injection request headers were added** — there is nothing to run
+   them against in this sandbox. ADR-016's "Decision" bullets describing
+   that service remain the target design for whenever this runs somewhere
+   with Docker access (tracked under Open Question #15, same as every other
+   sandboxed dependency).
+
+### Verification
+- `python -m unittest discover -s tests -p "test_*.py"`: 137/137 passing.
+- `bash scripts/lint_gateway_usage.sh`: PASS — `execute`/`executors.py` make
+  no provider SDK or `client_factory` calls (confirmed by
+  `test_execute_never_calls_gateway`, not just the lint's static check).
+- `python scripts/run_eval.py`: harness mechanics PASS (unaffected by this
+  feature).
+
+### Definition of Done
+- [x] `execute` node implemented, consuming `resolve_action()` per ADR-015.
+- [x] `execution_result` shape pinned and produced exactly as ADR-016 specifies.
+- [x] Routes `-(success)-> write_postmortem`, `-(failure)-> diagnose`.
+- [x] Never calls the gateway (`get_chat_client`/`get_embedding_client`).
+- [x] Unknown tool hard-fails (`ExecutorError`), never silently dispatched.
+- [x] All 4 pre-drafted PyTest skeleton names implemented and passing.
+- [x] Existing integration tests (`test_skeleton.py`,
+      `test_hitl_checkpoint_restart.py`) updated to mock the new dependency
+      and pass.
+- [x] `PROJECT_MEMORY.md` updated (Feature Log, ADR-016, ADR-021 addendum,
+      §7 Open Question #3, §3 Pillar 2, §9 checkbox).

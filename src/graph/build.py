@@ -30,8 +30,15 @@ replaces `_await_human_approval_placeholder` with the real
 checkpointer) until `state.human_decision` is set, then conditionally routes
 `-(approved)-> execute`, `-(rejected)-> diagnose` (the diagnose re-entry Open
 Question #9 partially de-risks — the edge exists, `diagnose`'s own behavior on
-re-entry is unchanged/unscoped). `execute` doesn't exist yet (roadmap item
-10) — `_execute_placeholder` still stands in for it. `build_graph()` now
+re-entry is unchanged/unscoped). Feature 10 (ADR-016) replaces
+`_execute_placeholder` with the real `execute` node: it dispatches the
+resolved action (ADR-015's `modified_action` precedence, via
+`await_human_approval.resolve_action`, when a human decision exists;
+otherwise `proposed_action` unchanged for the read-only branch) to
+`src.tools.executors.execute_tool` against the mock staging API, then
+conditionally routes `-(success)-> write_postmortem`, `-(failure)->
+diagnose`. `write_postmortem` doesn't exist yet (roadmap item 11) —
+`_write_postmortem_placeholder` stands in for it. `build_graph()` now
 takes an optional `checkpointer` (see `src/graph/checkpoint.py`'s
 `InMemoryCheckpointSaver`, the sandbox stand-in for `PostgresSaver` per
 ADR-002/015); omitting it preserves every prior feature's behavior exactly
@@ -69,6 +76,7 @@ from src.graph.nodes.await_human_approval import (
     await_human_approval,
     await_human_approval_route,
 )
+from src.graph.nodes.execute import ROUTE_FAILURE, ROUTE_SUCCESS, execute, execute_route
 from src.graph.nodes.guardrail_output import (
     ROUTE_AWAIT_APPROVAL,
     ROUTE_EXECUTE,
@@ -85,10 +93,10 @@ from src.graph.nodes.router import router
 from src.graph.state import IncidentState
 
 
-def _execute_placeholder(state: IncidentState) -> dict:
-    """Placeholder for the `execute` node (roadmap item 10 / Feature 10).
-    Routes straight to END until the mock staging API call and
-    `execution_result` shape exist."""
+def _write_postmortem_placeholder(state: IncidentState) -> dict:
+    """Placeholder for the `write_postmortem` node (roadmap item 11 / Feature
+    11). Routes straight to END until the postmortem draft and the
+    post-execution `guardrail_output` call site exist."""
     return {}
 
 
@@ -113,7 +121,8 @@ def build_graph(checkpointer: Optional[object] = None) -> StateGraph:
     graph.add_node("propose_action", propose_action)
     graph.add_node("guardrail_output", guardrail_output)
     graph.add_node("await_human_approval", await_human_approval)
-    graph.add_node("execute", _execute_placeholder)
+    graph.add_node("execute", execute)
+    graph.add_node("write_postmortem", _write_postmortem_placeholder)
 
     graph.add_edge(START, "guardrail_input")
     graph.add_conditional_edges(
@@ -147,6 +156,11 @@ def build_graph(checkpointer: Optional[object] = None) -> StateGraph:
         await_human_approval_route,
         {ROUTE_APPROVED: "execute", ROUTE_REJECTED: "diagnose"},
     )
-    graph.add_edge("execute", END)
+    graph.add_conditional_edges(
+        "execute",
+        execute_route,
+        {ROUTE_SUCCESS: "write_postmortem", ROUTE_FAILURE: "diagnose"},
+    )
+    graph.add_edge("write_postmortem", END)
 
     return graph.compile(checkpointer=checkpointer)
