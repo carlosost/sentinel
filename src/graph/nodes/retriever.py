@@ -5,12 +5,10 @@ against the corpus `router` selected (`state.route`), via
 the node's only state mutation — re-ranking is `reranker`'s job (this same
 feature, next node in the chain), not this one's.
 
-v1 reads `state["raw_alert"]` directly. ADR-012 (Feature 06) introduces
-`state.current_query` (init = raw_alert, overwritten on self-RAG retry); once
-that field exists, this node must read it (falling back to raw_alert) instead
-of raw_alert directly — same forward note as `router`'s (see this feature's
-"Forward Note" in memory/features/feature-05-retriever-reranker-nodes.md).
-Nothing here asserts current_query already exists.
+Reads `state.current_query`, falling back to `state.raw_alert` when unset
+(ADR-012, Feature 06) — same forward note as `router`'s, now resolved: a
+self-RAG retry loop re-entering `retriever` via `router` embeds the
+reformulated query, not the original alert text.
 """
 
 from __future__ import annotations
@@ -43,7 +41,7 @@ def retriever(
         )
 
     active_store = store if store is not None else default_store
-    query = state["raw_alert"]
+    query = state.get("current_query") or state["raw_alert"]
 
     client = get_embedding_client(model="sentinel-embedding")
     query_embedding = client.embed_documents([query])[0]

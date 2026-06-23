@@ -1,10 +1,13 @@
 """Deterministic Tier — the shim itself (ADR-021) is real project code with real
-failure modes (no branching, no cycles) that later features will hit. Pin its
-behavior so the shim's limitations fail loudly and specifically, not silently."""
+failure modes (malformed edges, runaway loops) that later features will hit. Pin
+its behavior so the shim's limitations fail loudly and specifically, not
+silently. Feature 06 added cycle support (`GraphNotLinearError` no longer covers
+cycles — see `GraphRecursionError`) plus a runtime step cap as a generic safety
+net against an unbounded path function."""
 
 import unittest
 
-from src.graph._compat import END, START, GraphNotLinearError, StateGraph
+from src.graph._compat import END, START, GraphNotLinearError, GraphRecursionError, StateGraph
 
 
 class CompatShimTests(unittest.TestCase):
@@ -36,15 +39,38 @@ class CompatShimTests(unittest.TestCase):
         with self.assertRaises(GraphNotLinearError):
             graph.add_edge("a", "c")
 
-    def test_cycle_raises(self):
+    def test_cycle_compiles_and_runs_until_a_path_function_breaks_it(self):
+        """Feature 06: cycles are now permitted. This graph loops a->b->a until
+        the path function (reading a counter the nodes increment) sends it to
+        END — proving the cycle actually executes, not just compiles."""
+        graph = StateGraph(dict)
+        graph.add_node("a", lambda s: {"count": s.get("count", 0) + 1})
+        graph.add_node("b", lambda s: {})
+        graph.add_edge(START, "a")
+        graph.add_conditional_edges(
+            "a", lambda s: "done" if s["count"] >= 3 else "loop", {"done": END, "loop": "b"}
+        )
+        graph.add_edge("b", "a")
+
+        compiled = graph.compile()
+        result = compiled.invoke({})
+
+        self.assertEqual(result["count"], 3)
+
+    def test_unbounded_cycle_raises_graph_recursion_error(self):
+        """The runtime safety net: a path function that never reaches END must
+        fail loudly within max_steps, not hang."""
         graph = StateGraph(dict)
         graph.add_node("a", lambda s: {})
         graph.add_node("b", lambda s: {})
         graph.add_edge(START, "a")
-        graph.add_edge("a", "b")
+        graph.add_conditional_edges("a", lambda s: "loop", {"loop": "b"})
         graph.add_edge("b", "a")
-        with self.assertRaises(GraphNotLinearError):
-            graph.compile()
+
+        compiled = graph.compile()
+
+        with self.assertRaises(GraphRecursionError):
+            compiled.invoke({}, max_steps=10)
 
     def test_conditional_edges_route_to_the_correct_branch(self):
         graph = StateGraph(dict)
@@ -76,15 +102,19 @@ class CompatShimTests(unittest.TestCase):
         result = compiled.invoke({})
         self.assertEqual(result, {})
 
-    def test_conditional_edges_with_a_cycle_raises_at_compile_time(self):
+    def test_conditional_edges_with_a_cycle_compile_fine(self):
+        """Feature 06: a conditional-edge cycle is exactly Sentinel's
+        grade_documents->router shape — must compile without error."""
         graph = StateGraph(dict)
         graph.add_node("a", lambda s: {})
         graph.add_node("b", lambda s: {})
         graph.add_edge(START, "a")
-        graph.add_conditional_edges("a", lambda s: "loop", {"loop": "b", "done": END})
+        graph.add_conditional_edges("a", lambda s: "done", {"loop": "b", "done": END})
         graph.add_edge("b", "a")
-        with self.assertRaises(GraphNotLinearError):
-            graph.compile()
+
+        compiled = graph.compile()  # must not raise
+
+        self.assertEqual(compiled.invoke({}), {})
 
     def test_path_function_returning_unknown_key_raises_at_runtime(self):
         graph = StateGraph(dict)

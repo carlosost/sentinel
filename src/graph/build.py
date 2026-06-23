@@ -6,28 +6,37 @@ before any real node is built. Feature 03 (ADR-009) replaced that placeholder wi
 the first real node, `guardrail_input`, which conditionally routes to `reject` (on
 an unsafe verdict) or `router` (otherwise). Feature 04 (ADR-010) replaced the
 `router` placeholder with the real node: it classifies the alert into exactly one
-corpus and writes `state.route`. Feature 05 (ADR-011) replaces `_retriever_placeholder`
+corpus and writes `state.route`. Feature 05 (ADR-011) replaced `_retriever_placeholder`
 with the real `retriever` and `reranker` nodes: top-k=20 cosine-similarity search
-against the routed corpus, then cross-encoder re-ranking to top-k=5.
-`grade_documents` itself doesn't exist yet (roadmap item 6) —
-`_grade_documents_placeholder` stands in for it, the same placeholder role
-`_retriever_placeholder` played here until this feature, so the graph stays
-compilable end-to-end as each feature lands. The Postgres checkpointer (ADR-002)
-is not wired in yet: per ADR-015/Feature 09, that wiring happens once
-`await_human_approval` exists and there is an actual interrupt boundary to
-persist across. Until then the graph compiles with no checkpointer (in-process
-only).
+against the routed corpus, then cross-encoder re-ranking to top-k=5. Feature 06
+(ADR-012) replaces `_grade_documents_placeholder` with the real `grade_documents`
+node and introduces the graph's first real cycle:
+`grade_documents -(low relevance, retry budget remaining)-> router`, bounded by
+`grade_documents`' own retry cap (never by `_compat.py`'s runtime safety net — see
+that module's docstring). `diagnose` itself doesn't exist yet (roadmap item 7) —
+`_diagnose_placeholder` stands in for it, the same placeholder role
+`_grade_documents_placeholder` played here until this feature. The Postgres
+checkpointer (ADR-002) is not wired in yet: per ADR-015/Feature 09, that wiring
+happens once `await_human_approval` exists and there is an actual interrupt
+boundary to persist across. Until then the graph compiles with no checkpointer
+(in-process only).
 
 SANDBOX NOTE (ADR-021): imports a stdlib shim (`src/graph/_compat.py`) in place of
-real `langgraph`, since this sandbox has no PyPI egress. The shim supports linear
-chains and explicit conditional branching (`add_conditional_edges`) but not
-cycles — see its docstring and Open Question #15 for what still breaks once
-cycles/interrupts are needed (Features 06, 09).
+real `langgraph`, since this sandbox has no PyPI egress. The shim now supports
+linear chains, conditional branching, and cycles (Feature 06 addendum) — it still
+does not support `interrupt()`/durable checkpointing, needed starting Feature 09.
+See `_compat.py`'s docstring and Open Question #15.
 """
 
 from __future__ import annotations
 
 from src.graph._compat import END, START, StateGraph
+from src.graph.nodes.grade_documents import (
+    ROUTE_PROCEED,
+    ROUTE_RETRY,
+    grade_documents,
+    grade_documents_route,
+)
 from src.graph.nodes.guardrail_input import (
     ROUTE_SAFE,
     ROUTE_UNSAFE,
@@ -41,9 +50,9 @@ from src.graph.nodes.router import router
 from src.graph.state import IncidentState
 
 
-def _grade_documents_placeholder(state: IncidentState) -> dict:
-    """Placeholder for the `grade_documents` node (roadmap item 6 / Feature 06).
-    Routes straight to END until self-RAG relevance grading + retry exist."""
+def _diagnose_placeholder(state: IncidentState) -> dict:
+    """Placeholder for the `diagnose` node (roadmap item 7 / Feature 07). Routes
+    straight to END until root-cause diagnosis + remediation proposal exist."""
     return {}
 
 
@@ -56,7 +65,8 @@ def build_graph() -> StateGraph:
     graph.add_node("router", router)
     graph.add_node("retriever", retriever)
     graph.add_node("reranker", reranker)
-    graph.add_node("grade_documents", _grade_documents_placeholder)
+    graph.add_node("grade_documents", grade_documents)
+    graph.add_node("diagnose", _diagnose_placeholder)
 
     graph.add_edge(START, "guardrail_input")
     graph.add_conditional_edges(
@@ -68,6 +78,11 @@ def build_graph() -> StateGraph:
     graph.add_edge("router", "retriever")
     graph.add_edge("retriever", "reranker")
     graph.add_edge("reranker", "grade_documents")
-    graph.add_edge("grade_documents", END)
+    graph.add_conditional_edges(
+        "grade_documents",
+        grade_documents_route,
+        {ROUTE_RETRY: "router", ROUTE_PROCEED: "diagnose"},
+    )
+    graph.add_edge("diagnose", END)
 
     return graph.compile()
