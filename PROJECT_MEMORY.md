@@ -283,6 +283,18 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
 - **Consequences:** `diagnose` (roadmap item 7) must not assume `relevance_grade >=
   0.6` just because it was reached.
 - **Status:** Accepted.
+- **Implementation note (Feature 06, resolves a Gherkin wording ambiguity):**
+  `retry_count` is implemented as "count of low-relevance gradings seen so far"
+  (incremented every time `relevance_grade` is below threshold, whether or not a
+  retry is actually taken), not "count of retries taken." The two schemes are
+  observably different only at one boundary: under "retries taken," a call that
+  just used the last allowed retry and a later call that already had zero retries
+  left converge on the same final `retry_count`, so a path function reading only
+  final state cannot route them differently. "Low-relevance gradings seen"
+  removes that ambiguity — `retry_count <= MAX_RETRIES` retries, anything past
+  that gives up — and was traced against all four Gherkin scenarios in
+  `feature-06-grade-documents-self-rag.md` to confirm identical behavior at every
+  stated boundary. Documented at length in `src/graph/nodes/grade_documents.py`.
 
 ### ADR-013: `proposed_action` shape with `side_effecting` flag; tool registry; diagnosis confidence hedging (Feature 07)
 - **Context:** §5.2's HITL/execute branching depends on knowing whether a tool is
@@ -832,7 +844,7 @@ guardrail_output -(safe, post-execution)-> END
 | `feature-03-guardrail-input-node` | `guardrail_input`/`reject` nodes (`src/graph/nodes/`); corrects §5.2 to include the rejection branch; `src/graph/_compat.py` gained `add_conditional_edges` (ADR-021 addendum — the shim only supported linear chains before this, but Feature 03 needs real branching) so `guardrail_input -(safe)-> router`, `-(unsafe)-> reject` compiles for real; `router` is a placeholder node (`_router_placeholder` in build.py) until Feature 04; 39/39 tests passing via `python3 -m unittest` | Phase 4 | **Done** | ADR-009, ADR-021 (addendum), §5.1, §5.2, §3 Pillar 3, §9 item 3 |
 | `feature-04-ingestion-router-node` | `corpora/{runbooks,postmortems,infra_code_docs}/` (9 synthetic markdown files), `src/ingestion/document_store.py` (`InMemoryDocumentStore` — new stdlib stand-in for the pgvector `documents` table, ADR-021 addendum), `scripts/ingest_corpora.py` (+ `make ingest`), `src/graph/nodes/router.py` (real node replacing the Feature 03 placeholder; raises `RouterError` rather than defaulting on an invalid/missing classification); `build.py` now compiles `guardrail_input -(safe)-> router -> retriever(placeholder)`; corrects Pillar 1 prose to single-corpus routing; 54/54 tests passing via `python3 -m unittest` (54 = 39 carried over from Feature 03 + 15 new) | Phase 4 | **Done** | ADR-010, ADR-021 (addendum), §3 Pillar 1, §7 (Open Question #15 addendum), §9 item 4 |
 | `feature-05-retriever-reranker-nodes` | `src/retrieval/vector_search.py` (`cosine_similarity`/`search` — the cosine-similarity decision Feature 04 deferred), `src/ingestion/document_store.py` gains a `default_store` singleton, `src/reranking/cross_encoder.py` (`_CrossEncoder`/`get_reranker_model` — stdlib stand-in for `sentence-transformers`, ADR-021 addendum), real `retriever`/`reranker` nodes (ADR-011) replacing the Feature 04 `_retriever_placeholder`; `build.py` now compiles `router -> retriever -> reranker -> grade_documents(placeholder)`; pins the `retrieved_docs`/`reranked_docs` dict shape; 74/74 tests passing via `python3 -m unittest` (74 = 54 carried over from Feature 04 + 20 new) | Phase 4 | **Done** | ADR-011 (new), ADR-021 (addendum), §3 Pillar 1, §3 Pillar 4, §7 (Open Question #15 addendum), §9 item 5 |
-| `feature-06-grade-documents-self-rag` | `grade_documents` node + self-RAG retry loop; adds `current_query` field and retry-exhaustion behavior | Phase 4 | In Progress | ADR-012 (new), §5.1, §3 Pillar 1, §9 item 6 |
+| `feature-06-grade-documents-self-rag` | `src/graph/nodes/grade_documents.py` (real node + `grade_documents_route` path function + `GradeDocumentsError`, ADR-012); `current_query` field added to `IncidentState`, read by `router`/`retriever`/`reranker` with `raw_alert` fallback; `_compat.py` retrofitted to support cycles (`GraphRecursionError` + `max_steps` runtime cap, ADR-021 addendum) — the graph's first real cycle, `grade_documents -(low relevance, retry budget remaining)-> router`; `retry_count` semantics deliberately redefined as "low-relevance gradings seen so far" to remove a routing ambiguity the Gherkin's wording left open; `build.py` rewired with a new `_diagnose_placeholder`; 84/84 tests passing via `python3 -m unittest` (84 = 74 carried over from Feature 05 + 10 new) | Phase 4 | **Done** | ADR-012 (new), ADR-021 (addendum), §5.1, §3 Pillar 1, §7 (Open Question #8), §9 item 6 |
 | `feature-07-diagnose-propose-action-nodes` | `diagnose` + `propose_action` nodes; adds tool registry, `side_effecting` flag, `diagnosis_confidence` field | Phase 4 | In Progress | ADR-013 (new), §5.1, §3 Pillar 1, §3 Pillar 2, §3 Pillar 4, §9 item 7 |
 | `feature-08-guardrail-output-node` | `guardrail_output` node; wires unsafe-verdict rejection branches at both call sites (deferred retrofit from ADR-009) | Phase 4 | In Progress | ADR-014 (new, retrofit), §5.2, §3 Pillar 3, §9 item 8 |
 | `feature-09-await-human-approval-node` | `await_human_approval` interrupt node + `PostgresSaver` wiring; formalizes `HumanDecision` shape and `modified_action` precedence | Phase 4 | In Progress | ADR-015 (new), §5.1, §3 Pillar 2, §9 item 9 |
@@ -964,6 +976,18 @@ guardrail_output -(safe, post-execution)-> END
     other stub client. Both are net-new modules, not extensions of `document_store.py`,
     consistent with that file's own deferral. Neither has been run against its real
     package, and that must be verified, not assumed, in the same future retrofit pass.
+    **Addendum (Feature 06):** `_compat.py`'s long-standing cycle limitation (flagged
+    in the Feature 03 addendum above) is now resolved for this shim: `compile()` no
+    longer rejects a structural cycle — it only validates that every edge target is a
+    known node (or `END`) and that an entry edge exists. `invoke()` gained a
+    `max_steps` runtime cap (`DEFAULT_MAX_STEPS = 25`, mirroring real langgraph's
+    `recursion_limit`) raising a new `GraphRecursionError` if exceeded — a generic
+    safety net against a runaway path function, distinct from `grade_documents`' own
+    retry cap, which is what actually bounds Sentinel's one real cycle. This removes
+    cycles from the list of capabilities this shim cannot represent at all (still
+    pending for Feature 09: `interrupt()`/durable checkpointing). Never run against
+    real `langgraph`'s own cycle/recursion-limit behavior, and that must be verified,
+    not assumed, in the same future retrofit pass.
 
 ---
 
@@ -1188,9 +1212,13 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
       (stand-in for `sentence-transformers`, ADR-021 addendum), real `retriever`/
       `reranker` nodes (ADR-011) replacing the Feature 04 placeholder; 74/74 tests
       pass via `python3 -m unittest discover -s tests`.
-- [ ] 6. Add the `grade_documents` node that scores reranked context for relevance
+- [x] 6. Add the `grade_documents` node that scores reranked context for relevance
       and, on a low score, loops back to `router` with a reformulated query, capped
-      at 2 retries.
+      at 2 retries. **Done** — `src/graph/nodes/grade_documents.py` (ADR-012); new
+      `current_query` field; `_compat.py` retrofitted for cycles (ADR-021 addendum,
+      `GraphRecursionError` + `max_steps` runtime cap); `build.py` wired into the
+      graph's first real cycle; 84/84 tests pass via
+      `python3 -m unittest discover -s tests`.
 - [ ] 7. Add the `diagnose` and `propose_action` nodes: generate a root-cause
       diagnosis from graded context, then produce a structured `{tool, args}`
       remediation proposal.

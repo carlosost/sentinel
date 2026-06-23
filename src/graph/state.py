@@ -32,6 +32,12 @@ class IncidentState(TypedDict):
     relevance_grade: Optional[float]
     retry_count: int
 
+    # ADR-012 (Feature 06) — additive field. Holds the self-RAG retry loop's
+    # current query text: unset on a fresh run (router/retriever fall back to
+    # raw_alert), overwritten by grade_documents with a reformulated query when
+    # looping back to router on low relevance.
+    current_query: Optional[str]
+
     # Pillar 1 (generation) — populated by diagnose/propose_action (roadmap item 7).
     diagnosis: Optional[str]
     proposed_action: Optional[dict]

@@ -11,17 +11,21 @@ package is not installable here. This shim implements `START`/`END` sentinels an
     also models branching this way, not via multiple `add_edge` calls from one
     node). `path` is called with the current state and must return a key present in
     `path_map`; `path_map` maps that key to a target node name (or `END`).
-  - `compile()` performs a static reachability walk from `START` across every
-    possible branch (not just one path) and raises `GraphNotLinearError` if it
-    finds a cycle. Branching is supported; cycles are not.
+  - Cycles (added for Feature 06 — the self-RAG retry loop is the graph's first
+    one): `compile()` no longer rejects a structural cycle; it only checks that
+    every edge target is a known node (or `END`) and that an entry edge exists.
+    `invoke()` enforces a `max_steps` runtime cap (default 25, matching real
+    langgraph's default `recursion_limit`) and raises `GraphRecursionError` if a
+    run exceeds it — a generic safety net against a runaway path function, not
+    something well-formed graphs (like Sentinel's, whose loop is bounded by
+    `grade_documents`' own retry cap) should ever hit.
 
-It still deliberately does NOT support cycles or `interrupt()`/durable
-checkpointing — those are required starting around Feature 06 (self-RAG retry
-loop) and Feature 09 (HITL interrupt/resume). Open Question #15 tracks replacing
-this shim with real `langgraph` (and, with it, re-verifying every node wired
-against it) before any feature that needs those capabilities ships its "real"
-implementation. Until then, this shim itself is the known limiting factor on how
-much of the roadmap can be faithfully executed here.
+It still deliberately does NOT support `interrupt()`/durable checkpointing —
+required starting around Feature 09 (HITL interrupt/resume). Open Question #15
+tracks replacing this shim with real `langgraph` (and, with it, re-verifying every
+node wired against it) before any feature that needs that capability ships its
+"real" implementation. Until then, this shim itself is the known limiting factor on
+how much of the roadmap can be faithfully executed here.
 """
 
 from __future__ import annotations
@@ -32,13 +36,24 @@ from typing import Any, Callable
 START = "__start__"
 END = "__end__"
 
+DEFAULT_MAX_STEPS = 25
+
 NodeFn = Callable[[dict], dict]
 PathFn = Callable[[dict], str]
 
 
 class GraphNotLinearError(RuntimeError):
-    """Raised when a graph uses a feature (cycles) this shim can't run, or when an
-    edge is malformed (duplicate outgoing edge, unknown target, missing entry)."""
+    """Raised when an edge is malformed (duplicate outgoing edge from a node,
+    unknown target, missing entry edge). No longer raised for cycles — see
+    `GraphRecursionError` for the runtime safety net that replaces it."""
+
+
+class GraphRecursionError(RuntimeError):
+    """Raised when a single `invoke()` run exceeds `max_steps` node executions —
+    real langgraph's own `recursion_limit` behavior. A well-formed cyclic graph
+    (one whose nodes themselves bound the loop, e.g. `grade_documents`' retry
+    cap) should never hit this; it exists to fail loudly on a path function bug
+    that produces an unbounded loop, rather than hanging."""
 
 
 @dataclass(frozen=True)
@@ -72,20 +87,20 @@ class _CompiledGraph:
             return edge.path_map[key]
         return self._static_edges.get(current, END)
 
-    def invoke(self, initial_state: dict) -> dict:
+    def invoke(self, initial_state: dict, *, max_steps: int = DEFAULT_MAX_STEPS) -> dict:
         state: dict[str, Any] = dict(initial_state)
         current = self._entry
-        visited_this_run: set[str] = set()
+        steps = 0
         while current != END:
-            if current in visited_this_run:
-                # Compile-time DFS should already have caught any cycle; this is a
-                # defensive backstop in case a path function's behavior depends on
-                # runtime state in a way the static walk couldn't see.
-                raise GraphNotLinearError(
-                    f"Cycle encountered at runtime at '{current}' — this shim does "
-                    "not support cycles (see Open Question #15)."
+            if steps >= max_steps:
+                raise GraphRecursionError(
+                    f"Run exceeded max_steps={max_steps} without reaching END — "
+                    f"stopped at '{current}'. This is a runaway-loop safety net "
+                    "(see Open Question #15), not expected for any well-formed "
+                    "Sentinel graph, whose only cycle (grade_documents' retry "
+                    "loop) is bounded by its own retry cap."
                 )
-            visited_this_run.add(current)
+            steps += 1
             update = self._nodes[current](state) or {}
             state.update(update)
             current = self._next(current, state)
@@ -148,24 +163,22 @@ class StateGraph:
                 if target != END and target not in known_nodes:
                     raise GraphNotLinearError(f"Edge targets unknown node '{target}'.")
 
-        # Static reachability walk from START across every branch, detecting cycles
-        # via the DFS-stack ("currently being visited") convention.
-        on_stack: set[str] = set()
+        # Reachability walk from START across every branch, just to catch an
+        # unknown-target edge reachable only via a conditional branch (already
+        # checked exhaustively above, but kept as a second pass for any future
+        # edge type that isn't exhaustively enumerable that way). Cycles are
+        # permitted (Feature 06) — `visited` here is "already validated," not a
+        # DFS-stack membership check, so revisiting a node is not an error.
+        visited: set[str] = set()
 
         def visit(node: str) -> None:
-            if node == END:
+            if node == END or node in visited:
                 return
             if node not in known_nodes:
                 raise GraphNotLinearError(f"Edge targets unknown node '{node}'.")
-            if node in on_stack:
-                raise GraphNotLinearError(
-                    f"Cycle detected at '{node}' — this shim does not support "
-                    "cycles (see Open Question #15)."
-                )
-            on_stack.add(node)
+            visited.add(node)
             for target in self._all_targets_of(node):
                 visit(target)
-            on_stack.discard(node)
 
         visit(self._entry)
 

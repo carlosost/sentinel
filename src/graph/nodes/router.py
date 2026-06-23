@@ -10,12 +10,10 @@ Multi-corpus fan-out is explicitly out of scope per ADR-010 (Open Question
 best-effort fallback, since silently picking a default corpus would be a
 worse failure mode than failing loudly.
 
-v1 reads `state["raw_alert"]` directly. ADR-012 (Feature 06) introduces
-`state.current_query` (init = raw_alert, overwritten on self-RAG retry); once
-that field exists, this node must read it (falling back to raw_alert) instead
-of raw_alert directly — see this feature's "Forward Note" in
-memory/features/feature-04-ingestion-router-node.md. Nothing here asserts
-current_query already exists.
+Reads `state.current_query`, falling back to `state.raw_alert` when unset
+(ADR-012, Feature 06) — so a fresh run uses the original alert text, and a
+self-RAG retry loop re-entering `router` from `grade_documents` uses the
+reformulated query instead.
 """
 
 from __future__ import annotations
@@ -48,7 +46,7 @@ def _build_prompt(alert_text: str) -> str:
 
 
 def router(state: IncidentState) -> Dict[str, Any]:
-    query = state["raw_alert"]
+    query = state.get("current_query") or state["raw_alert"]
     client = get_chat_client(model="sentinel-router")
     raw_response = client.invoke(_build_prompt(query))
 

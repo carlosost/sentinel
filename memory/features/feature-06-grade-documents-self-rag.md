@@ -1,7 +1,7 @@
 # Feature 06 — `grade_documents` Node + Self-RAG Retry Loop
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
+**Status:** Done
 **PMA sections touched:** ADR-012 (new), §5.1, §3 Pillar 1, §7 (new Open Question),
 §6 Feature Log, §9 item 6
 
@@ -143,3 +143,73 @@ def test_grade_documents_uses_client_factory(mock_client_factory):
     """Deterministic Tier. Enforces ADR-003/006 on the grading call."""
     ...
 ```
+
+## Implementation Status
+
+### Implemented
+
+- `src/graph/state.py`: added `current_query: Optional[str]` (ADR-012).
+- `src/graph/nodes/router.py`, `retriever.py`, `reranker.py`: all three changed
+  `query = state["raw_alert"]` → `query = state.get("current_query") or
+  state["raw_alert"]`, fulfilling this feature's forward note to Features 04/05.
+- `src/graph/nodes/grade_documents.py` (new): `grade_documents` node,
+  `grade_documents_route` path function, `GradeDocumentsError`. One structured-output
+  call via `get_chat_client(model="sentinel-grader")`. `RELEVANCE_THRESHOLD = 0.6`,
+  `MAX_RETRIES = 2`.
+- **`retry_count` redefinition (deliberate resolution of a Gherkin ambiguity, not a
+  Gherkin violation):** `retry_count` counts *low-relevance gradings seen so far*
+  (incremented on every low grading, whether or not a retry is taken), not "retries
+  taken." Without this, a path function reading only final state cannot distinguish
+  "just used the last allowed retry" from "had none left before this call" — both
+  converge on the same `retry_count`. Traced against all four Gherkin scenarios above
+  and confirmed it produces identical observable behavior to the spec's wording at
+  every stated boundary (retry_count 0→1 retries, 1→2 retries, starting at 2 gives
+  up). Documented at length in `grade_documents.py`'s module docstring.
+- `src/graph/_compat.py` (ADR-021 addendum): retrofitted to support cycles —
+  `compile()` no longer raises on a structural cycle (only validates edge
+  targets/entry); `invoke()` gained a `max_steps` runtime cap (default 25, mirrors
+  real LangGraph's `recursion_limit`) raising new `GraphRecursionError`. This is a
+  generic safety net against a runaway path function — Sentinel's actual cycle is
+  bounded by `grade_documents`' own retry cap and should never hit it.
+- `src/graph/build.py`: replaced `_grade_documents_placeholder` with the real node;
+  `reranker -> grade_documents` then `add_conditional_edges(grade_documents,
+  grade_documents_route, {ROUTE_RETRY: "router", ROUTE_PROCEED: "diagnose"})` — the
+  graph's first real cycle. Added `_diagnose_placeholder` for roadmap item 7.
+
+### Deviations from the PyTest skeletons
+
+- Added tests beyond the four skeletons: missing-`reformulated_query`-when-retry-due
+  raises `GradeDocumentsError`; non-JSON response raises; missing `relevance_grade`
+  raises; a "third consecutive low grading gives up even though a
+  reformulated_query was supplied" test, proving the route decision is
+  retry-budget-based, not presence-of-reformulated-query-based.
+- `tests/graph/test_compat.py`: the two cycle-rejecting tests
+  (`test_cycle_raises`, `test_conditional_edges_with_a_cycle_raises_at_compile_time`)
+  were rewritten rather than removed — both now assert the opposite (cycles compile
+  and run correctly) — plus a new `test_unbounded_cycle_raises_graph_recursion_error`
+  pinning the runtime safety net.
+- `tests/graph/test_skeleton.py`: the Feature 05 safe-path test was extended (mocking
+  `grade_documents`'s gateway call to return a high grade) and a new full-graph
+  integration test added, proving the self-RAG loop actually executes two retries
+  end-to-end through the live `_compat.py` before giving up to `diagnose`.
+
+### Verification
+
+- `python3 -m unittest discover -s tests` → **84/84 passing** (up from 74).
+- `bash scripts/lint_gateway_usage.sh` → passed.
+- `python3 scripts/run_eval.py` → passed (harness mechanics only).
+
+### Definition of Done
+
+- [x] New ADR-012 written and accepted.
+- [x] `current_query` field added additively to `IncidentState`.
+- [x] `grade_documents` node + path function implemented per ADR-012.
+- [x] Retry-counting ambiguity identified, resolved, and documented.
+- [x] `_compat.py` retrofitted for cycles (ADR-021 addendum), with a runtime safety
+      net distinct from the node's own retry cap.
+- [x] `build.py` rewired into the graph's first real cycle.
+- [x] All four Gherkin scenarios covered by passing tests, plus additional edge
+      cases.
+- [x] Full test suite, lint, and eval harness all pass.
+- [x] `PROJECT_MEMORY.md` updated (Feature Log, ADR-012, ADR-021 addendum, §9 item
+      6, new Open Question for the threshold).

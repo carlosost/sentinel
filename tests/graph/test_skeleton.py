@@ -1,12 +1,14 @@
 """Deterministic Tier — integration-style test of the real entry path
-(guardrail_input -> router -> retriever -> reranker -> grade_documents | reject),
-superseding Feature 01's entry->END smoke test now that real nodes exist
-(ADR-009's Blast Radius note). guardrail_check, router's classification call, and
-retriever's embedding call are all mocked; the default (empty) document store
-means retriever returns zero candidates and reranker short-circuits without
-touching the cross-encoder. This never asserts moderation, routing, or retrieval
-accuracy/relevance — only the graph's wiring/routing contract (ADR-010/ADR-011's
-Pillar Impact notes)."""
+(guardrail_input -> router -> retriever -> reranker -> grade_documents <-> router
+loop -> diagnose | reject), superseding Feature 01's entry->END smoke test now
+that real nodes exist (ADR-009's Blast Radius note). guardrail_check, router's
+classification call, retriever's embedding call, and grade_documents' grading
+call are all mocked; the default (empty) document store means retriever returns
+zero candidates and reranker short-circuits without touching the cross-encoder.
+This never asserts moderation, routing, retrieval, or grading accuracy — only the
+graph's wiring/routing contract (ADR-010/ADR-011/ADR-012's Pillar Impact notes),
+including that the self-RAG cycle (Feature 06's `_compat.py` addendum) actually
+executes end-to-end, not just compiles."""
 
 import json
 import unittest
@@ -26,6 +28,7 @@ def _initial_state(raw_alert: str = "disk usage at 95% on db-primary") -> dict:
         "reranked_docs": [],
         "relevance_grade": None,
         "retry_count": 0,
+        "current_query": None,
         "diagnosis": None,
         "proposed_action": None,
         "human_decision": None,
@@ -36,19 +39,27 @@ def _initial_state(raw_alert: str = "disk usage at 95% on db-primary") -> dict:
 
 
 class GraphSkeletonTests(unittest.TestCase):
+    @patch("src.graph.nodes.grade_documents.get_chat_client")
     @patch("src.graph.nodes.retriever.get_embedding_client")
     @patch("src.graph.nodes.router.get_chat_client")
     @patch("src.graph.nodes.guardrail_input.guardrail_check")
-    def test_graph_runs_full_safe_path_through_grade_documents_placeholder(
-        self, mock_check, mock_get_chat_client, mock_get_embedding_client
+    def test_graph_runs_full_safe_path_high_relevance_reaches_diagnose_placeholder(
+        self,
+        mock_check,
+        mock_router_chat_client,
+        mock_get_embedding_client,
+        mock_grader_chat_client,
     ):
         mock_check.return_value = {"verdict": "safe", "reason": "stub"}
-        mock_chat_client = MagicMock()
-        mock_chat_client.invoke.return_value = json.dumps({"route": "runbooks"})
-        mock_get_chat_client.return_value = mock_chat_client
+        mock_router_client = MagicMock()
+        mock_router_client.invoke.return_value = json.dumps({"route": "runbooks"})
+        mock_router_chat_client.return_value = mock_router_client
         mock_embedding_client = MagicMock()
         mock_embedding_client.embed_documents.return_value = [[0.1, 0.2]]
         mock_get_embedding_client.return_value = mock_embedding_client
+        mock_grader_client = MagicMock()
+        mock_grader_client.invoke.return_value = json.dumps({"relevance_grade": 0.9})
+        mock_grader_chat_client.return_value = mock_grader_client
 
         graph = build_graph()
         result = graph.invoke(_initial_state())
@@ -60,6 +71,47 @@ class GraphSkeletonTests(unittest.TestCase):
         # Default (empty) document store -> no candidates -> reranker short-circuits.
         self.assertEqual(result["retrieved_docs"], [])
         self.assertEqual(result["reranked_docs"], [])
+        self.assertEqual(result["relevance_grade"], 0.9)
+        # router only ran once: high relevance on the first pass, no retry loop.
+        mock_router_client.invoke.assert_called_once()
+
+    @patch("src.graph.nodes.grade_documents.get_chat_client")
+    @patch("src.graph.nodes.retriever.get_embedding_client")
+    @patch("src.graph.nodes.router.get_chat_client")
+    @patch("src.graph.nodes.guardrail_input.guardrail_check")
+    def test_graph_self_rag_loop_retries_twice_then_gives_up_to_diagnose(
+        self,
+        mock_check,
+        mock_router_chat_client,
+        mock_get_embedding_client,
+        mock_grader_chat_client,
+    ):
+        """Proves the cycle Feature 06 added to `_compat.py` actually executes
+        end-to-end: two low-relevance gradings retry back through router, a
+        third gives up (ADR-012's graceful degradation) and reaches diagnose."""
+        mock_check.return_value = {"verdict": "safe", "reason": "stub"}
+        mock_router_client = MagicMock()
+        mock_router_client.invoke.return_value = json.dumps({"route": "runbooks"})
+        mock_router_chat_client.return_value = mock_router_client
+        mock_embedding_client = MagicMock()
+        mock_embedding_client.embed_documents.return_value = [[0.1, 0.2]]
+        mock_get_embedding_client.return_value = mock_embedding_client
+        mock_grader_client = MagicMock()
+        mock_grader_client.invoke.side_effect = [
+            json.dumps({"relevance_grade": 0.3, "reformulated_query": "reformulated once"}),
+            json.dumps({"relevance_grade": 0.3, "reformulated_query": "reformulated twice"}),
+            json.dumps({"relevance_grade": 0.3}),
+        ]
+        mock_grader_chat_client.return_value = mock_grader_client
+
+        graph = build_graph()
+        result = graph.invoke(_initial_state())
+
+        self.assertEqual(result["relevance_grade"], 0.3)
+        self.assertEqual(result["retry_count"], 3)
+        self.assertEqual(result["current_query"], "reformulated twice")
+        self.assertEqual(mock_router_client.invoke.call_count, 3)
+        self.assertEqual(mock_grader_client.invoke.call_count, 3)
 
     @patch("src.graph.nodes.guardrail_input.guardrail_check")
     def test_graph_runs_guardrail_input_then_reject_on_unsafe_verdict(self, mock_check):
