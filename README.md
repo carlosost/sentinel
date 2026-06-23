@@ -138,27 +138,18 @@ baseline met, and the Feature Log row filled in.
 
 ## Running it
 
-```
-python -m unittest discover -s tests -p "test_*.py"   # 190/190 passing
-bash scripts/lint_gateway_usage.sh                     # enforces ADR-006/ADR-003
-python scripts/run_eval.py                             # eval harness mechanics
-```
-
-These run entirely against stdlib stand-ins (ADR-021) — no API keys, network access,
-or Docker required. The three fine-tuning scripts
-(`export_finetune_pairs.py`/`finetune_embedding_model.py`/`ab_eval_embedding_model.py`)
-and `ingest_corpora.py` will report an explicit Open Question #15 message instead of a
-real result, since this sandbox never had `langgraph`/`langsmith`/`ragas`/
-`sentence-transformers`/PyPI egress. `Makefile`/`Dockerfile`/`requirements.txt` document
-the real target stack for running this with actual model calls on a machine with
-network access.
+- `python3 -m unittest discover -s tests` — full Deterministic Tier suite (190/190 passing).
+- `python3 -m pyflakes src tests` (or your preferred linter) — lint check.
+- `scripts/*.py` — most exit non-zero or print an explicit sandbox-limitation
+  message rather than silently faking results; see PROJECT_MEMORY.md §10 for
+  which scripts do which, and why.
 
 ## Status
 
-All 14 Phase 4 roadmap items implemented and tested (ADR-007 through ADR-021) — see
-§6 (Feature Log), §9 (Roadmap), and §10 (Project Retrospective) of `PROJECT_MEMORY.md`.
-Every feature was built and verified against faithful stdlib stand-ins for its real
-dependencies (no PyPI/network/Docker egress in this sandbox); swapping those stand-ins
-for the real packages and producing the project's first real eval baseline is the
-honest next step, tracked as Open Question #15 — see the Retrospective for the full
-shim inventory.
+All 14 Phase 4 roadmap items are **done** (ADR-007 through ADR-020) — see §6
+(Feature Log), §9 (Roadmap), and §10 (Retrospective) of `PROJECT_MEMORY.md`.
+Every feature is implemented and covered by Deterministic Tier tests, but none
+has run against its real external dependency (LLM, vector DB, LangSmith, etc.)
+— this sandbox has no PyPI/network/Docker egress, so every such dependency is
+a stdlib stand-in shim (ADR-021) that raises `NotImplementedError`. That ADR-021
+retrofit pass — swapping shims for real packages — is the honest next step.

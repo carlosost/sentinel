@@ -1326,212 +1326,30 @@ passed the full Definition of Done (§8.5) and has a corresponding row in the Fe
 Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not skip ahead
 — each item assumes the ones above it exist.
 
-- [x] 1. Bootstrap local infra: docker-compose for Postgres+pgvector, Redis, and the
-      LiteLLM proxy; implement `src/gateway/client_factory.py` as the only path to
-      model clients; stub `guardrail_check()`; define the initial `IncidentState`
-      schema and an empty graph with just `entry`→`END`. **Done** — implemented
-      against stdlib shims per ADR-021 (sandbox has no PyPI egress); 14/14 tests
-      pass via `python3 -m unittest discover -s tests`. Open Question #15 tracks
-      swapping the shims for real `langgraph`/`langchain-openai`/`pytest`.
-- [x] 2. Build the eval harness: author `evals/golden_incidents.jsonl` (20+ synthetic
-      incidents with reference root cause, reference remediation, and pass/fail
-      rubric), write `evals/judge_prompt.md`, and wire ragas (`context_precision`,
-      `context_recall`, `faithfulness`) plus a LangSmith custom evaluator into CI.
-      **Done** — 21 golden incidents; `sentinel_remediation_judge` registered
-      against a stdlib LangSmith-registry shim (ADR-021 addendum); `make eval` CI
-      job; ragas wiring deferred (no retriever/diagnosis to score yet, by design —
-      see Feature 02's Pillar Impact caveat); 28/28 tests pass via
-      `python3 -m unittest discover -s tests`.
-- [x] 3. Add the `guardrail_input` node: on graph entry, call `guardrail_check()` on
-      the raw alert text and route to a `reject` node on an unsafe verdict, router
-      otherwise. **Done** — `src/graph/nodes/{guardrail_input,reject}.py`;
-      `_compat.py` gained `add_conditional_edges` (ADR-021 addendum) to support the
-      real branch; `router` is a placeholder pending roadmap item 4; 39/39 tests
-      pass via `python3 -m unittest discover -s tests`.
-- [x] 4. Ingest runbooks, postmortems, and infra/code docs into pgvector, then add the
-      `router` node that classifies the incoming query against those three corpora
-      and selects a retriever. **Done** — `corpora/` (9 synthetic markdown files),
-      `src/ingestion/document_store.py` (`InMemoryDocumentStore`, ADR-021
-      addendum — stdlib stand-in for the pgvector `documents` table), real
-      `router` node (ADR-010) replacing the Feature 03 placeholder; 54/54 tests
-      pass via `python3 -m unittest discover -s tests`.
-- [x] 5. Add the `retriever` and `reranker` nodes: pgvector similarity search at
-      top-k=20 followed by `bge-reranker-base` cross-encoder re-ranking down to
-      top-k=5. **Done** — `src/retrieval/vector_search.py` (cosine-similarity
-      stand-in for pgvector's `<=>`, ADR-021 addendum), `src/reranking/cross_encoder.py`
-      (stand-in for `sentence-transformers`, ADR-021 addendum), real `retriever`/
-      `reranker` nodes (ADR-011) replacing the Feature 04 placeholder; 74/74 tests
-      pass via `python3 -m unittest discover -s tests`.
-- [x] 6. Add the `grade_documents` node that scores reranked context for relevance
-      and, on a low score, loops back to `router` with a reformulated query, capped
-      at 2 retries. **Done** — `src/graph/nodes/grade_documents.py` (ADR-012); new
-      `current_query` field; `_compat.py` retrofitted for cycles (ADR-021 addendum,
-      `GraphRecursionError` + `max_steps` runtime cap); `build.py` wired into the
-      graph's first real cycle; 84/84 tests pass via
-      `python3 -m unittest discover -s tests`.
-- [x] 7. Add the `diagnose` and `propose_action` nodes: generate a root-cause
-      diagnosis from graded context, then produce a structured `{tool, args}`
-      remediation proposal. **Done** — `src/tools/registry.py` (ADR-013); real
-      `diagnose`/`propose_action` nodes; `diagnosis_confidence` field added to
-      `state.py`; `build.py` wired through a new `_guardrail_output_placeholder`;
-      101/101 tests pass via `python3 -m unittest discover -s tests`.
-- [x] 8. Add the `guardrail_output` node: run `guardrail_check()` on the proposed
-      remediation explanation and route to `reject` on an unsafe verdict.
-      **Done** — `src/graph/nodes/guardrail_output.py` (ADR-014); routes safe
-      + side-effecting -> `_await_human_approval_placeholder`, safe + read-only
-      -> `_execute_placeholder`, unsafe -> `reject`; also fixed a pre-existing
-      `reject.py` bug (see Feature Log); 111/111 tests pass via
-      `python3 -m unittest discover -s tests`.
-- [x] 9. Add the `await_human_approval` interrupt node and wire `PostgresSaver` so any
-      `side_effecting=True` proposed action pauses the graph durably until a human
-      submits an `{approved, modified_action, note}` decision. **Done** —
-      `src/graph/nodes/await_human_approval.py` (ADR-015); `_compat.py` gained
-      `interrupt()`/`GraphInterrupt`/checkpointer support (ADR-021 addendum);
-      `src/graph/checkpoint.py`'s `InMemoryCheckpointSaver` stands in for
-      `PostgresSaver`; `build_graph(checkpointer=...)` wires
-      `await_human_approval -(approved)-> execute`,
-      `-(rejected)-> diagnose`; resume restart-survival tested via two graph
-      objects sharing one checkpointer instance; 129/129 tests pass via
-      `python3 -m unittest discover -s tests`.
-- [x] 10. Add the `execute` node that runs the approved remediation against a mock
-      staging API (resolved Open Question #3 via ADR-016), routing failures back to
-      `diagnose` and successes to `write_postmortem`. **Done** — see
-      `/memory/features/feature-10-execute-node.md`.
-- [x] 11. Add the `write_postmortem` node that drafts a postmortem from the diagnosis,
-      action, and execution result, then passes it through `guardrail_output` before
-      `END`. **Done** — see `/memory/features/feature-11-write-postmortem-node.md`.
-- [x] 12. Configure the LiteLLM proxy for production behavior: a primary→secondary
-      fallback chain, Redis-backed semantic caching, and per-API-key rate limits, with
-      cost/usage logging tagged to LangSmith `trace_id`. **Done** —
-      `infra/litellm_config.yaml` (ADR-018); `src/observability/tracing.py`
-      (trace_id context); `src/gateway/litellm_proxy.py`'s `MockLiteLLMProxy`
-      (ADR-021 addendum); `client_factory`/`evaluator.py` wired through; 152/152
-      tests pass via `python3 -m unittest discover -s tests`.
-- [x] 13. Replace the `guardrail_check()` stub with real Llama Guard 3-8B inference
-      behind the gateway, for both input and output moderation paths. **Done** —
-      ADR-019; 168/168 tests pass via `python3 -m unittest discover -s tests`.
-- [x] 14. Build the fine-tuning pipeline: `scripts/export_finetune_pairs.py` exporting
-      `grade_documents` LangSmith traces into contrastive JSONL pairs, a
-      `sentence-transformers` fine-tune of `bge-small-en-v1.5`, and an A/B eval
-      against the golden set before promoting it behind a config flag.
-      **Done** — ADR-020 (corrected data source: retriever/reranker spans, not
-      `grade_documents`); 190/190 tests pass via
-      `python3 -m unittest discover -s tests`.
+- [x] 1. Bootstrap local infra: docker-compose for Postgres+pgvector, Redis, and the LiteLLM proxy; implement `src/gateway/client_factory.py` as the only path to model clients; stub `guardrail_check()`; define the initial `IncidentState` schema and an empty graph with just `entry`→`END`. **Done** — implemented against stdlib shims per ADR-021 (sandbox has no PyPI egress); 14/14 tests pass via `python3 -m unittest discover -s tests`. Open Question #15 tracks swapping the shims for real `langgraph`/`langchain-openai`/`pytest`.
 
----
+- [x] 2. Build the eval harness: author `evals/golden_incidents.jsonl` (20+ synthetic incidents with reference root cause, reference remediation, and pass/fail rubric), write `evals/judge_prompt.md`, and wire ragas (`context_precision`, `context_recall`, `faithfulness`) plus a LangSmith custom evaluator into CI. **Done** — 21 golden incidents; `sentinel_remediation_judge` registered against a stdlib LangSmith-registry shim (ADR-021 addendum); `make eval` CI job; ragas wiring deferred (no retriever/diagnosis to score yet, by design — see Feature 02's Pillar Impact caveat); 28/28 tests pass via `python3 -m unittest discover -s tests`.
 
-## 10. Project Retrospective (all 14 features complete)
+- [x] 3. Add the `guardrail_input` node: on graph entry, call `guardrail_check()` on the raw alert text and route to a `reject` node on an unsafe verdict, router otherwise. **Done** — `src/graph/nodes/{guardrail_input,reject}.py`; `_compat.py` gained `add_conditional_edges` (ADR-021 addendum) to support the real branch; `router` is a placeholder pending roadmap item 4; 39/39 tests pass via `python3 -m unittest discover -s tests`.
 
-**Final verification (re-run at wrap-up, not just at Feature 14):**
-- `python -m unittest discover -s tests -p "test_*.py"` → 190/190 passing.
-- `bash scripts/lint_gateway_usage.sh` → PASS.
-- `python scripts/run_eval.py` → PASS (harness mechanics).
-- `python scripts/ingest_corpora.py` → exits 1 (`LITELLM_PROXY_URL` not set) — expected:
-  mocked in `tests/ingestion/test_ingest_corpora.py`, real run needs a live proxy.
-- `python scripts/export_finetune_pairs.py` → exits 0, reports the `langsmith`-egress
-  gap explicitly (Open Question #15).
-- `python scripts/finetune_embedding_model.py` → exits 1 (no pairs file yet, since
-  export can't produce a real one here) — expected, same root cause.
-- `python scripts/ab_eval_embedding_model.py` → exits 0, reports the `ragas`/live-retriever
-  gap explicitly (Open Question #15).
-- All five non-zero/caveat outcomes above are the *correct* behavior for this sandbox,
-  not bugs — each one fails loudly with a named Open Question rather than silently
-  returning a fabricated result. This is the project's "never silently default"
-  convention validated end-to-end, one final time, across every entry point.
+- [x] 4. Ingest runbooks, postmortems, and infra/code docs into pgvector, then add the `router` node that classifies the incoming query against those three corpora and selects a retriever. **Done** — `corpora/` (9 synthetic markdown files), `src/ingestion/document_store.py` (`InMemoryDocumentStore`, ADR-021 addendum — stdlib stand-in for the pgvector `documents` table), real `router` node (ADR-010) replacing the Feature 03 placeholder; 54/54 tests pass via `python3 -m unittest discover -s tests`.
 
-**Per-pillar outcome vs. the original Phase 1 scope:**
+- [x] 5. Add the `retriever` and `reranker` nodes: pgvector similarity search at top-k=20 followed by `bge-reranker-base` cross-encoder re-ranking down to top-k=5. **Done** — `src/retrieval/vector_search.py` (cosine-similarity stand-in for pgvector's `<=>`, ADR-021 addendum), `src/reranking/cross_encoder.py` (stand-in for `sentence-transformers`, ADR-021 addendum), real `retriever`/ `reranker` nodes (ADR-011) replacing the Feature 04 placeholder; 74/74 tests pass via `python3 -m unittest discover -s tests`.
 
-1. *Advanced RAG Mechanics* — fully built: query routing (`router`, ADR-010, single-corpus
-   scope — multi-corpus fan-out deliberately deferred, Open Question #7), re-ranking
-   (`reranker`, ADR-011, real cross-encoder *scores*, inference itself stubbed per
-   Open Question #15), and self-RAG (`grade_documents`'s retry loop, ADR-012, the
-   project's only real graph cycle). The retriever's embedding call later grew a second,
-   swappable code path for the fine-tuned model (ADR-020) without changing this pillar's
-   document-shape contract at all — a clean example of one pillar's later work not
-   destabilizing an earlier one.
-2. *HITL* — fully built: `await_human_approval`'s interrupt/checkpoint/resume cycle
-   (ADR-015), proven across a simulated process restart (two graph objects sharing one
-   checkpointer). The cleanest pillar in the project, because LangGraph's interrupt
-   primitive maps almost directly onto the requirement — most of the engineering effort
-   went into the `_compat.py` shim faithfully modeling that primitive (ADR-021 addendum),
-   not into the HITL logic itself.
-3. *Guardrails* — built in two passes by design: a stub in Feature 01 (explicitly
-   never treated as done) gated graph entry/exit from day one, then real Llama Guard
-   3-8B inference replaced it in Feature 13 (ADR-019) once the rest of the graph existed
-   to moderate. This two-pass structure is the project's clearest demonstration of
-   "ship a stub with a tracked Open Question, retrofit later" rather than blocking all
-   downstream work on one pillar landing first.
-4. *LLM Evals* — built early (`evals/golden_incidents.jsonl`, the judge prompt, the
-   LangSmith evaluator registry shim, Feature 02) and extended once each new moderation
-   surface existed (the guardrail red-team dataset, Feature 13). Never reached a real
-   *scored* baseline in this sandbox — `ragas`/a live retriever run were never available
-   — so this pillar's Definition of Done was always "harness mechanics verified," not
-   "baseline recorded." That gap is real and is what Open Question #15 exists to close.
-5. *AI Gateways* — built in two passes: the `client_factory` seam from Feature 01 (every
-   model call construction goes through one factory, enforced by
-   `lint_gateway_usage.sh`), then real production behavior (fallback chains, semantic
-   caching, per-key rate limits, trace_id-tagged logging) in Feature 12 (ADR-018). The
-   lint script is this pillar's single most valuable artifact — it caught zero violations
-   across 14 features, but its existence is what made that true, not luck.
-6. *Fine-Tuning Integration* — built last (Feature 14, ADR-020), and the only pillar
-   whose original Phase 1 prose was factually wrong about its own data source
-   (`grade_documents` was never able to emit what the prose claimed — ADR-012 only ever
-   defined one aggregate grade per batch). Catching that required actually reading
-   `grade_documents`' real implementation before writing the export pipeline, not just
-   the original prose — a concrete instance of why the Conflict Check step exists.
+- [x] 6. Add the `grade_documents` node that scores reranked context for relevance and, on a low score, loops back to `router` with a reformulated query, capped at 2 retries. **Done** — `src/graph/nodes/grade_documents.py` (ADR-012); new `current_query` field; `_compat.py` retrofitted for cycles (ADR-021 addendum `GraphRecursionError` + `max_steps` runtime cap); `build.py` wired into the graph's first real cycle; 84/84 tests pass via `python3 -m unittest discover -s tests`.
 
-**What the meta-framework actually bought:**
-- The retrofit-not-rewrite discipline (every correction is a new ADR or an addendum to
-  an existing one, never an edit-in-place that erases what was previously decided) meant
-  this retrospective could be written entirely from already-recorded history — no
-  feature's real behavior had to be reconstructed from code archaeology.
-- The Conflict Check step caught two real, separate defects before they shipped: the
-  Pillar 6 data-source error above, and (Feature 08) a pre-existing `reject.py` bug
-  where a safe input verdict silently shadowed a later unsafe output verdict's reason.
-  Neither was hypothetical — both were found by the process, not just claimed by it.
-- The placeholder-with-a-numbered-Open-Question pattern (relevance threshold #8,
-  rate-limit caps #12, guardrail precision/recall thresholds #13, promotion margin #14)
-  kept every "we don't have real data yet" decision visible and consistently shaped,
-  rather than each feature inventing its own ad hoc TODO style.
+- [x] 7. Add the `diagnose` and `propose_action` nodes: generate a root-cause diagnosis from graded context, then produce a structured `{tool, args}` remediation proposal. **Done** — `src/tools/registry.py` (ADR-013); real `diagnose`/`propose_action` nodes; `diagnosis_confidence` field added to `state.py`; `build.py` wired through a new `_guardrail_output_placeholder`; 101/101 tests pass via `python3 -m unittest discover -s tests`.
 
-**What the sandbox constraint cost:**
-- No feature in this project ever ran against a real LLM, a real vector store, a real
-  LangSmith trace, or a real `sentence-transformers` model. Every "Done" status in the
-  Feature Log means "matches spec, tests pass against a faithful stdlib stand-in" — not
-  "verified against the real dependency." Open Question #15 is therefore not a minor
-  footnote; it is the single largest gap between this project's current state and an
-  honestly production-ready one, and closing it is real, non-mechanical work for several
-  shims (`_compat.py`'s `langgraph` parity most of all, per ADR-021's own caveat about
-  Features 04/06/09's branching/cycles/interrupts).
-- Because of this, the eval harness (Pillar 4) never produced a real scored baseline —
-  every "PASS" from `scripts/run_eval.py` validates harness mechanics, never RAG quality.
-  Anyone picking this project up to actually deploy it should treat "first real eval run"
-  as its own work item, not an afterthought of swapping shims.
+- [x] 8. Add the `guardrail_output` node: run `guardrail_check()` on the proposed remediation explanation and route to `reject` on an unsafe verdict. **Done** — `src/graph/nodes/guardrail_output.py` (ADR-014); routes safe + side-effecting -> `_await_human_approval_placeholder`, safe + read-only -> `_execute_placeholder`, unsafe -> `reject`; also fixed a pre-existing `reject.py` bug (see Feature Log); 111/111 tests pass via `python3 -m unittest discover -s tests`.
 
-**Remaining Open Questions (§7), triaged:**
-- **Resolved:** #1 (guardrail unstubbing, ADR-019), #3 (tool execution sandboxing,
-  ADR-016), #5 (fine-tune promotion criteria, ADR-020), #6 (guardrail_output wiring,
-  ADR-014).
-- **Deliberately deferred, not blocking:** #2 (synthetic vs. real incident data — needs
-  a licensing check before sourcing real postmortems), #7 (multi-corpus fan-out — no
-  real incident has needed it yet), #9 (`diagnose` re-entry behavior — partially
-  de-risked by Feature 09's wiring, still unscoped for `execute -(failure)->diagnose`),
-  #10 (HTTP API layer — never designed, needed before any human/UI can actually drive a
-  run), #11 (no retry cap on `execute -(failure)->diagnose` — a real robustness gap, not
-  just a missing nicety).
-- **Placeholders awaiting real data, by design:** #4 (self-RAG retry cap), #8 (relevance
-  threshold), #12 (rate-limit caps), #13 (guardrail thresholds), #14 (promotion margin) —
-  all five share the same shape (a hardcoded number with no empirical basis) and should
-  be revisited together once a real eval baseline exists, since they likely interact
-  (e.g., a tighter relevance threshold changes how often the retry cap is hit).
-- **The structural one:** #15 (sandbox dependency shims) — now has a complete addendum
-  trail through ADR-021 covering every shim added across all 14 features (Features 01,
-  02, 03, 04, 05, 06, 09, 10, 12, 13, 14). Closing it is the prerequisite for treating
-  any other "Resolved" item above as more than "resolved against a faithful stand-in."
+- [x] 9. Add the `await_human_approval` interrupt node and wire `PostgresSaver` so any `side_effecting=True` proposed action pauses the graph durably until a human submits an `{approved, modified_action, note}` decision. **Done** — `src/graph/nodes/await_human_approval.py` (ADR-015); `_compat.py` gained `interrupt()`/`GraphInterrupt`/checkpointer support (ADR-021 addendum); `src/graph/checkpoint.py`'s `InMemoryCheckpointSaver` stands in for `PostgresSaver`; `build_graph(checkpointer=...)` wires `await_human_approval -(approved)-> execute`, `-(rejected)-> diagnose`; resume restart-survival tested via two graph objects sharing one checkpointer instance; 129/129 tests pass via `python3 -m unittest discover -s tests`.
 
-**If this project continued:** the honest next roadmap item is not a 15th feature inside
-this sandbox, but the ADR-021 retrofit pass itself — swap every shim for its real
-package on a machine with PyPI/network/Docker access, re-run all 190 tests against real
-dependencies, and only then let the eval harness (Pillar 4) produce its first real
-baseline. Everything in Open Questions #4/#8/#12/#13/#14 is downstream of that baseline
-existing.
+- [x] 10. Add the `execute` node that runs the approved remediation against a mock staging API (resolved Open Question #3 via ADR-016), routing failures back to `diagnose` and successes to `write_postmortem`. **Done** — see `/memory/features/feature-10-execute-node.md`.
+
+- [x] 11. Add the `write_postmortem` node that drafts a postmortem from the diagnosis, action, and execution result, then passes it through `guardrail_output` before `END`. **Done** — see `/memory/features/feature-11-write-postmortem-node.md`.
+
+- [x] 12. Configure the LiteLLM proxy for production behavior: a primary→secondary fallback chain, Redis-backed semantic caching, and per-API-key rate limits, with cost/usage logging tagged to LangSmith `trace_id`. **Done** — `infra/litellm_config.yaml` (ADR-018); `src/observability/tracing.py` (trace_id context); `src/gateway/litellm_proxy.py`'s `MockLiteLLMProxy` (ADR-021 addendum); `client_factory`/`evaluator.py` wired through; 152/152 tests pass via `python3 -m unittest discover -s tests`.
+
+- [x] 13. Replace the `guardrail_check()` stub with real Llama Guard 3-8B inference behind the gateway, for both input and output moderation paths. **Done** — ADR-019; 168/168 tests pass via `python3 -m unittest discover -s tests`.
+
+- [x] 14. Build the fine-tuning pipeline: `scripts/export_finetune_pairs.py` exporting `grade_documents` LangSmith traces into contrastive JSONL pairs, a `sentence-transformers` fine-tune of `bge-small-en-v1.5`, and an A/B eval against the golden set before promoting it behind a config flag. **Done** — ADR-020 (corrected data source: retriever/reranker spans, not `grade_documents`); 190/190 tests pass via `python3 -m unittest discover -s tests`.
