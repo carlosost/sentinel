@@ -1,11 +1,11 @@
 """`guardrail_input` node (ADR-004, ADR-009 — Feature 03).
 
 The graph's first real node: moderates the raw alert text on entry and routes
-to `reject` on an unsafe verdict, `router` otherwise. The moderation decision
-itself is still the Feature 01 stub (`guardrail_check` always returns "safe")
-— this feature wires the real call site and the real routing contract around
-it, per ADR-004's original promise. Unstubbing lands at roadmap item 13
-(ADR-019) and changes none of this file.
+to `reject` on an unsafe verdict, `router` otherwise. As of Feature 13
+(ADR-019), `guardrail_check` makes a real Llama Guard 3-8B call through the
+gateway rather than the Feature 01 stub that always returned "safe" — this
+node's own routing contract is unchanged, since it only ever read
+`verdict["verdict"]`.
 """
 
 from __future__ import annotations

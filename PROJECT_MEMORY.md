@@ -444,7 +444,8 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   (`sentinel-router`, `sentinel-grader`, `sentinel-diagnose`, `sentinel-propose-action`,
   `sentinel-postmortem`, `sentinel-judge`, `sentinel-embedding` — the ADR's own prose
   example names, `sentinel-chat`/`sentinel-embedding`, were illustrative only) each
-  with a fallback, plus a `sentinel-guardrail` pair reserved/commented for Feature 13.
+  with a fallback, plus a `sentinel-guardrail` pair that was reserved/commented at the
+  time (since wired up for real by Feature 13/ADR-019).
   `client_factory.get_chat_client`/`get_embedding_client` merge
   `metadata={"trace_id": get_current_trace_id()}` into `extra` additively (never
   clobbering a caller-supplied `metadata` dict's other keys). `evaluator.run_judge`'s
@@ -479,6 +480,22 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   contract; adding fields later is additive, removing the binary constraint is a
   retrofit. Guardrail moderation accuracy is measurable for the first time.
 - **Status:** Accepted.
+- **Implementation status (Feature 13):** implemented exactly as decided.
+  `src/guardrails/check.py` calls `client_factory.get_chat_client(model=
+  "sentinel-guardrail")`, parses strict-JSON, and returns the formalized
+  `GuardrailVerdict`; a new `GuardrailCheckError` is raised (never a silent "safe"
+  default) on non-JSON, an invalid verdict, an empty reason, or a verdict/category
+  mismatch. `evals/guardrail_redteam.jsonl` (10 examples) plus
+  `src/evals/guardrail_dataset.py` and `src/evals/guardrail_eval.py`
+  (`score_guardrail_dataset`) exist and are unit-tested; `scripts/run_eval.py` loads
+  and validates the dataset as part of `make eval`'s mechanics-only run (no live
+  model in this sandbox — Open Question #15). Three existing graph integration tests
+  (`tests/graph/test_skeleton.py`, `tests/graph/test_hitl_checkpoint_restart.py`) had
+  only ever mocked `guardrail_input.guardrail_check`, relying on the old stub's
+  hardcoded "safe" for the `guardrail_output` call site; they now also mock
+  `guardrail_output.guardrail_check` — a test-only fix, no decision changed. 168/168
+  tests passing, lint PASS, eval harness PASS. See
+  `/memory/features/feature-13-guardrail-unstubbing.md`.
 
 ### ADR-020: Fine-tuning data source correction; promotion criteria; local model-swap scope (Feature 14, retrofit, resolves Open Question #5)
 - **Context:** Pillar 6's original prose named `grade_documents`' per-(query, doc)
@@ -949,7 +966,7 @@ guardrail_output -(safe, post-execution)-> END
 | `feature-10-execute-node` | `src/graph/nodes/execute.py` (real `execute`/`execute_route`, ADR-016) replacing `_execute_placeholder`; `_action_to_execute` applies ADR-015's `modified_action` precedence via `resolve_action()` when `human_decision` is set, else runs `proposed_action` unchanged; `src/tools/executors.py` (new — `execute_tool`, `ExecutorError`, `get_staging_api_client()` factory/`_StagingApiClient` stand-in for the real `httpx`-backed mock-staging-API call, ADR-021 addendum); pins `execution_result` shape; `build.py` adds `_write_postmortem_placeholder` (roadmap item 11) as `execute`'s new success target, wires `execute -(success)-> write_postmortem`, `-(failure)-> diagnose`; `tests/graph/test_skeleton.py` and `test_hitl_checkpoint_restart.py`'s execute-reaching tests updated to mock the staging client; 137/137 tests passing via `python3 -m unittest discover -s tests` (137 = 129 carried over from Feature 09 + 8 new) | Phase 4 | **Done** | ADR-016 (new), ADR-021 (addendum), §5.1, §3 Pillar 2, §7 (Open Question #3, resolved), §9 item 10 |
 | `feature-11-write-postmortem-node` | `src/graph/nodes/write_postmortem.py` (real `write_postmortem`, ADR-017) replacing `_write_postmortem_placeholder`; drafts a 4-section postmortem (Summary/Root Cause/Action Taken & Outcome/Notes) from diagnosis/action/execution_result via `client_factory.get_chat_client`, reusing `await_human_approval.resolve_action`'s ADR-015 precedence rule rather than re-deriving it; confidence-aware Notes append when `diagnosis_confidence == "low"`; routes via a single static edge into `guardrail_output`'s post-execution branch (ADR-014), closing that branch end-to-end for the first time; `build.py` updated, no `_compat.py` change needed (multiple incoming edges to one node already permitted); 141/141 tests passing via `python3 -m unittest discover -s tests` (141 = 137 carried over from Feature 10 + 4 new) | Phase 4 | **Done** | ADR-017 (new), §3 Pillar 2, §3 Pillar 3, §7 (Open Question #11, already pre-flagged), §9 item 11 |
 | `feature-12-litellm-proxy-hardening` | LiteLLM proxy production config: fallback chains, semantic caching with eval carve-out, per-key rate limits, trace_id-tagged cost logging. 152/152 tests passing (141 carried over from Feature 11 + 11 new: 5 in `test_litellm_production_config.py`, 3 in `test_litellm_config_yaml.py`, 3 in `test_tracing.py`; `test_gateway_compliance.py`'s one existing assertion updated in place, no count change). Lint PASS, eval harness PASS. | Phase 4 | **Done** | ADR-018, ADR-021 addendum (new), §5.3, §3 Pillar 5, §3 Pillar 4, §7 (Open Question #12, already pre-flagged), §9 item 12 |
-| `feature-13-guardrail-unstubbing` | Real Llama Guard 3-8B inference replaces the `guardrail_check()` stub; formalizes `GuardrailVerdict` shape; adds `evals/guardrail_redteam.jsonl`; corrects ADR-004's pillar reference and §8.3's `borderline` mention | Phase 4 | In Progress | ADR-019 (new, retrofit), §5.1, §8.3, §3 Pillar 3, §3 Pillar 4, §7 (resolves Open Question #1, new Open Question), §9 item 13 |
+| `feature-13-guardrail-unstubbing` | Real Llama Guard 3-8B inference replaces the `guardrail_check()` stub; formalizes `GuardrailVerdict` shape (`verdict`/`reason`/`category`); adds `evals/guardrail_redteam.jsonl` + `src/evals/guardrail_dataset.py`/`guardrail_eval.py` precision/recall scorer wired into `scripts/run_eval.py`; corrects ADR-004's pillar reference and §8.3's `borderline` mention; updated 3 existing graph integration tests to also mock `guardrail_output.guardrail_check` (previously relied on the old stub's hardcoded "safe"). 168/168 tests passing (up from 152). Lint PASS, eval harness PASS. | Phase 4 | **Done** | ADR-019 (new, retrofit), §5.1, §8.3, §3 Pillar 3, §3 Pillar 4, §7 (resolves Open Question #1, Open Question #13 already pre-flagged), §9 item 13 |
 | `feature-14-finetuning-pipeline` | Fine-tuning export/train/A-B-promote pipeline for the embedding model; corrects Pillar 6's data-source prose to retriever/reranker spans; resolves Open Question #5 | Phase 4 | In Progress | ADR-020 (new, retrofit), §3 Pillar 6, §3 Pillar 1, §7 (resolves Open Question #5, new Open Question), §9 item 14 |
 
 ---
@@ -1355,8 +1372,9 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
       (trace_id context); `src/gateway/litellm_proxy.py`'s `MockLiteLLMProxy`
       (ADR-021 addendum); `client_factory`/`evaluator.py` wired through; 152/152
       tests pass via `python3 -m unittest discover -s tests`.
-- [ ] 13. Replace the `guardrail_check()` stub with real Llama Guard 3-8B inference
-      behind the gateway, for both input and output moderation paths.
+- [x] 13. Replace the `guardrail_check()` stub with real Llama Guard 3-8B inference
+      behind the gateway, for both input and output moderation paths. **Done** —
+      ADR-019; 168/168 tests pass via `python3 -m unittest discover -s tests`.
 - [ ] 14. Build the fine-tuning pipeline: `scripts/export_finetune_pairs.py` exporting
       `grade_documents` LangSmith traces into contrastive JSONL pairs, a
       `sentence-transformers` fine-tune of `bge-small-en-v1.5`, and an A/B eval

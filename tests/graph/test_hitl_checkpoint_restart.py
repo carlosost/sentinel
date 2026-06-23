@@ -71,6 +71,7 @@ def _mock_side_effecting_pipeline(
 
 
 class HitlCheckpointRestartTests(unittest.TestCase):
+    @patch("src.graph.nodes.guardrail_output.guardrail_check")
     @patch("src.graph.nodes.propose_action.get_chat_client")
     @patch("src.graph.nodes.diagnose.get_chat_client")
     @patch("src.graph.nodes.grade_documents.get_chat_client")
@@ -78,8 +79,11 @@ class HitlCheckpointRestartTests(unittest.TestCase):
     @patch("src.graph.nodes.router.get_chat_client")
     @patch("src.graph.nodes.guardrail_input.guardrail_check")
     def test_run_pauses_at_await_human_approval_and_persists_checkpoint(
-        self, mock_check, *chat_mocks
+        self, mock_check, *rest
     ):
+        mock_output_check = rest[-1]
+        chat_mocks = rest[:-1]
+        mock_output_check.return_value = {"verdict": "safe", "reason": "stub"}
         _mock_side_effecting_pipeline(mock_check, *chat_mocks)
         test_postgres_saver = InMemoryCheckpointSaver()
         graph = build_graph(checkpointer=test_postgres_saver)
@@ -93,6 +97,7 @@ class HitlCheckpointRestartTests(unittest.TestCase):
         self.assertEqual(paused_at, "await_human_approval")
         self.assertEqual(persisted_state["proposed_action"]["tool"], "restart_service")
 
+    @patch("src.graph.nodes.guardrail_output.guardrail_check")
     @patch("src.graph.nodes.write_postmortem.get_chat_client")
     @patch("src.tools.executors.get_staging_api_client")
     @patch("src.graph.nodes.propose_action.get_chat_client")
@@ -102,14 +107,16 @@ class HitlCheckpointRestartTests(unittest.TestCase):
     @patch("src.graph.nodes.router.get_chat_client")
     @patch("src.graph.nodes.guardrail_input.guardrail_check")
     def test_resume_after_simulated_process_restart_continues_correctly(
-        self, mock_check, *chat_mocks_and_staging_and_postmortem
+        self, mock_check, *chat_mocks_and_staging_and_postmortem_and_output
     ):
         """Kills and reinstantiates the graph object against the same
         checkpointer instance, then resumes — the core HITL durability
         guarantee from §1's success criteria."""
-        mock_postmortem_chat_client = chat_mocks_and_staging_and_postmortem[-1]
-        mock_get_staging_api_client = chat_mocks_and_staging_and_postmortem[-2]
-        chat_mocks = chat_mocks_and_staging_and_postmortem[:-2]
+        mock_output_check = chat_mocks_and_staging_and_postmortem_and_output[-1]
+        mock_postmortem_chat_client = chat_mocks_and_staging_and_postmortem_and_output[-2]
+        mock_get_staging_api_client = chat_mocks_and_staging_and_postmortem_and_output[-3]
+        chat_mocks = chat_mocks_and_staging_and_postmortem_and_output[:-3]
+        mock_output_check.return_value = {"verdict": "safe", "reason": "stub"}
         _mock_side_effecting_pipeline(mock_check, *chat_mocks)
         mock_staging_client = MagicMock()
         mock_staging_client.call.return_value = {"success": True, "output": "restarted"}

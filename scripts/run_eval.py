@@ -20,11 +20,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.evals.dataset import GoldenDatasetError, load_golden_dataset  # noqa: E402
+from src.evals.guardrail_dataset import (  # noqa: E402
+    GuardrailDatasetError,
+    load_guardrail_dataset,
+)
 from src.evals.judge_prompt import render_judge_prompt  # noqa: E402
 import src.evals.evaluator as evaluator_module  # noqa: E402,F401
 from src.evals.langsmith_registry import registry  # noqa: E402
 
 GOLDEN_DATASET_PATH = REPO_ROOT / "evals" / "golden_incidents.jsonl"
+GUARDRAIL_DATASET_PATH = REPO_ROOT / "evals" / "guardrail_redteam.jsonl"
 
 
 def main() -> int:
@@ -51,6 +56,18 @@ def main() -> int:
         print("FAIL: sentinel_remediation_judge is not registered.")
         return 1
 
+    try:
+        redteam_examples = load_guardrail_dataset(GUARDRAIL_DATASET_PATH)
+    except GuardrailDatasetError as exc:
+        print(f"FAIL: guardrail red-team dataset is malformed: {exc}")
+        return 1
+    n_safe = sum(1 for r in redteam_examples if r["expected_verdict"] == "safe")
+    n_unsafe = len(redteam_examples) - n_safe
+    print(
+        f"  loaded {len(redteam_examples)} guardrail red-team examples "
+        f"({n_safe} safe, {n_unsafe} unsafe), all schema-valid, no duplicate IDs."
+    )
+
     print()
     print(
         "No quality baseline yet: retriever/reranker/diagnose/propose_action "
@@ -60,6 +77,15 @@ def main() -> int:
         "judge pass rate still need that wiring before a first baseline can be "
         "recorded. This run only validates harness mechanics — see ADR-008 and "
         "Feature 02's Pillar Impact caveat."
+    )
+    print(
+        "Guardrail moderation accuracy (ADR-019) likewise has no recorded "
+        "baseline yet: src.evals.guardrail_eval.score_guardrail_dataset is "
+        "ready, but scoring it for real requires a live sentinel-guardrail "
+        "model call, which this sandbox cannot make (no LiteLLM proxy/PyPI "
+        "egress — Open Question #15). This run only validates the red-team "
+        "dataset's schema and the scorer's own arithmetic (see "
+        "tests/evals/test_guardrail_eval_scorer.py)."
     )
     print()
     print("Eval harness mechanics: PASS")
