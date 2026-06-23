@@ -2,9 +2,10 @@
 
 Sentinel is a learning project for building a production-grade LLM application from
 scratch with LangGraph, LangSmith, LangChain, and Advanced RAG — built under a strict
-Spec-Driven Development → BDD → TDD workflow. It is currently in **Phase 4: feature
-implementation**, design-complete for all 14 roadmap items, with code/tests not yet
-written.
+Spec-Driven Development → BDD → TDD workflow. **All 14 Phase 4 roadmap items are
+implemented and tested** (190/190 tests passing). See §10 (Project Retrospective) of
+`PROJECT_MEMORY.md` for the full wrap-up, including what the sandbox this was built in
+could and couldn't verify.
 
 ## What it does
 
@@ -91,8 +92,11 @@ evals/
   golden_incidents.jsonl        # versioned eval set (reference root cause/remediation/rubric)
   judge_prompt.md               # LangSmith LLM-as-judge rubric prompt
   guardrail_redteam.jsonl       # labeled safe/unsafe examples for moderation accuracy
+  finetuning/                    # export_pairs.py, langsmith_spans.py, ab_eval.py
+  embeddings/                    # finetuned_embeddings.py (local fine-tuned model shim)
 scripts/
   ingest_corpora.py             # corpus -> pgvector ingestion
+  run_eval.py                   # eval harness mechanics + guardrail red-team dataset
   export_finetune_pairs.py      # LangSmith spans -> contrastive JSONL pairs
   finetune_embedding_model.py   # sentence-transformers contrastive fine-tune
   ab_eval_embedding_model.py    # base vs. fine-tuned promotion gate
@@ -132,8 +136,29 @@ A feature is only checked off the roadmap once it passes the full Definition of 
 in §8.5 — Gherkin scenarios green, unit/integration tests passing, the relevant eval
 baseline met, and the Feature Log row filled in.
 
+## Running it
+
+```
+python -m unittest discover -s tests -p "test_*.py"   # 190/190 passing
+bash scripts/lint_gateway_usage.sh                     # enforces ADR-006/ADR-003
+python scripts/run_eval.py                             # eval harness mechanics
+```
+
+These run entirely against stdlib stand-ins (ADR-021) — no API keys, network access,
+or Docker required. The three fine-tuning scripts
+(`export_finetune_pairs.py`/`finetune_embedding_model.py`/`ab_eval_embedding_model.py`)
+and `ingest_corpora.py` will report an explicit Open Question #15 message instead of a
+real result, since this sandbox never had `langgraph`/`langsmith`/`ragas`/
+`sentence-transformers`/PyPI egress. `Makefile`/`Dockerfile`/`requirements.txt` document
+the real target stack for running this with actual model calls on a machine with
+network access.
+
 ## Status
 
-Design-complete through all 14 Phase 4 roadmap items (ADR-007 through ADR-020) — see
-§6 (Feature Log) and §9 (Roadmap) of `PROJECT_MEMORY.md`. No application code or
-tests have been written yet; that's the next phase of work.
+All 14 Phase 4 roadmap items implemented and tested (ADR-007 through ADR-021) — see
+§6 (Feature Log), §9 (Roadmap), and §10 (Project Retrospective) of `PROJECT_MEMORY.md`.
+Every feature was built and verified against faithful stdlib stand-ins for its real
+dependencies (no PyPI/network/Docker egress in this sandbox); swapping those stand-ins
+for the real packages and producing the project's first real eval baseline is the
+honest next step, tracked as Open Question #15 — see the Retrospective for the full
+shim inventory.

@@ -637,6 +637,25 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   invocation. Open Question #15's scope grows to include swapping both for the
   real `langsmith` SDK and a real running `litellm` proxy, neither of which
   this shim pair has ever been run against.
+- **Addendum (Feature 13):** no new shim module — Feature 13 made
+  `client_factory.get_chat_client(model="sentinel-guardrail")` the real call
+  site for Llama Guard moderation, but `_ChatClient.invoke()` itself was
+  already, and remains, the same `NotImplementedError` stub this ADR
+  established for Feature 01. "Real Llama Guard 3-8B inference" describes the
+  *production code path* now being correct (no more hardcoded `"safe"`
+  shortcut bypassing the gateway), not a change in what this sandbox can
+  actually execute. Open Question #15's scope is unchanged by this feature.
+- **Addendum (Feature 14):** two further shims, both new modules.
+  `src/finetuning/langsmith_spans.py`'s `get_retriever_reranker_spans()`
+  stands in for a real `langsmith.Client()` trace-spans fetch (same need as
+  the Feature 02 addendum's evaluator registry, but for reading spans rather
+  than registering evaluators) — raises `NotImplementedError`. `src/embeddings/
+  finetuned_embeddings.py`'s `get_finetuned_embedding_model()` stands in for a
+  locally-loaded fine-tuned `sentence-transformers` model, mirroring the
+  Feature 05 addendum's `cross_encoder.py` shim exactly (same package,
+  same `.{predict,embed_documents}()`-raises-`NotImplementedError` shape).
+  Neither has been run against its real package. Open Question #15's scope
+  grows to include both.
 - **Status:** Accepted (provisional — superseded the moment real package access is
   available).
 
@@ -1398,3 +1417,121 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
       **Done** — ADR-020 (corrected data source: retriever/reranker spans, not
       `grade_documents`); 190/190 tests pass via
       `python3 -m unittest discover -s tests`.
+
+---
+
+## 10. Project Retrospective (all 14 features complete)
+
+**Final verification (re-run at wrap-up, not just at Feature 14):**
+- `python -m unittest discover -s tests -p "test_*.py"` → 190/190 passing.
+- `bash scripts/lint_gateway_usage.sh` → PASS.
+- `python scripts/run_eval.py` → PASS (harness mechanics).
+- `python scripts/ingest_corpora.py` → exits 1 (`LITELLM_PROXY_URL` not set) — expected:
+  mocked in `tests/ingestion/test_ingest_corpora.py`, real run needs a live proxy.
+- `python scripts/export_finetune_pairs.py` → exits 0, reports the `langsmith`-egress
+  gap explicitly (Open Question #15).
+- `python scripts/finetune_embedding_model.py` → exits 1 (no pairs file yet, since
+  export can't produce a real one here) — expected, same root cause.
+- `python scripts/ab_eval_embedding_model.py` → exits 0, reports the `ragas`/live-retriever
+  gap explicitly (Open Question #15).
+- All five non-zero/caveat outcomes above are the *correct* behavior for this sandbox,
+  not bugs — each one fails loudly with a named Open Question rather than silently
+  returning a fabricated result. This is the project's "never silently default"
+  convention validated end-to-end, one final time, across every entry point.
+
+**Per-pillar outcome vs. the original Phase 1 scope:**
+
+1. *Advanced RAG Mechanics* — fully built: query routing (`router`, ADR-010, single-corpus
+   scope — multi-corpus fan-out deliberately deferred, Open Question #7), re-ranking
+   (`reranker`, ADR-011, real cross-encoder *scores*, inference itself stubbed per
+   Open Question #15), and self-RAG (`grade_documents`'s retry loop, ADR-012, the
+   project's only real graph cycle). The retriever's embedding call later grew a second,
+   swappable code path for the fine-tuned model (ADR-020) without changing this pillar's
+   document-shape contract at all — a clean example of one pillar's later work not
+   destabilizing an earlier one.
+2. *HITL* — fully built: `await_human_approval`'s interrupt/checkpoint/resume cycle
+   (ADR-015), proven across a simulated process restart (two graph objects sharing one
+   checkpointer). The cleanest pillar in the project, because LangGraph's interrupt
+   primitive maps almost directly onto the requirement — most of the engineering effort
+   went into the `_compat.py` shim faithfully modeling that primitive (ADR-021 addendum),
+   not into the HITL logic itself.
+3. *Guardrails* — built in two passes by design: a stub in Feature 01 (explicitly
+   never treated as done) gated graph entry/exit from day one, then real Llama Guard
+   3-8B inference replaced it in Feature 13 (ADR-019) once the rest of the graph existed
+   to moderate. This two-pass structure is the project's clearest demonstration of
+   "ship a stub with a tracked Open Question, retrofit later" rather than blocking all
+   downstream work on one pillar landing first.
+4. *LLM Evals* — built early (`evals/golden_incidents.jsonl`, the judge prompt, the
+   LangSmith evaluator registry shim, Feature 02) and extended once each new moderation
+   surface existed (the guardrail red-team dataset, Feature 13). Never reached a real
+   *scored* baseline in this sandbox — `ragas`/a live retriever run were never available
+   — so this pillar's Definition of Done was always "harness mechanics verified," not
+   "baseline recorded." That gap is real and is what Open Question #15 exists to close.
+5. *AI Gateways* — built in two passes: the `client_factory` seam from Feature 01 (every
+   model call construction goes through one factory, enforced by
+   `lint_gateway_usage.sh`), then real production behavior (fallback chains, semantic
+   caching, per-key rate limits, trace_id-tagged logging) in Feature 12 (ADR-018). The
+   lint script is this pillar's single most valuable artifact — it caught zero violations
+   across 14 features, but its existence is what made that true, not luck.
+6. *Fine-Tuning Integration* — built last (Feature 14, ADR-020), and the only pillar
+   whose original Phase 1 prose was factually wrong about its own data source
+   (`grade_documents` was never able to emit what the prose claimed — ADR-012 only ever
+   defined one aggregate grade per batch). Catching that required actually reading
+   `grade_documents`' real implementation before writing the export pipeline, not just
+   the original prose — a concrete instance of why the Conflict Check step exists.
+
+**What the meta-framework actually bought:**
+- The retrofit-not-rewrite discipline (every correction is a new ADR or an addendum to
+  an existing one, never an edit-in-place that erases what was previously decided) meant
+  this retrospective could be written entirely from already-recorded history — no
+  feature's real behavior had to be reconstructed from code archaeology.
+- The Conflict Check step caught two real, separate defects before they shipped: the
+  Pillar 6 data-source error above, and (Feature 08) a pre-existing `reject.py` bug
+  where a safe input verdict silently shadowed a later unsafe output verdict's reason.
+  Neither was hypothetical — both were found by the process, not just claimed by it.
+- The placeholder-with-a-numbered-Open-Question pattern (relevance threshold #8,
+  rate-limit caps #12, guardrail precision/recall thresholds #13, promotion margin #14)
+  kept every "we don't have real data yet" decision visible and consistently shaped,
+  rather than each feature inventing its own ad hoc TODO style.
+
+**What the sandbox constraint cost:**
+- No feature in this project ever ran against a real LLM, a real vector store, a real
+  LangSmith trace, or a real `sentence-transformers` model. Every "Done" status in the
+  Feature Log means "matches spec, tests pass against a faithful stdlib stand-in" — not
+  "verified against the real dependency." Open Question #15 is therefore not a minor
+  footnote; it is the single largest gap between this project's current state and an
+  honestly production-ready one, and closing it is real, non-mechanical work for several
+  shims (`_compat.py`'s `langgraph` parity most of all, per ADR-021's own caveat about
+  Features 04/06/09's branching/cycles/interrupts).
+- Because of this, the eval harness (Pillar 4) never produced a real scored baseline —
+  every "PASS" from `scripts/run_eval.py` validates harness mechanics, never RAG quality.
+  Anyone picking this project up to actually deploy it should treat "first real eval run"
+  as its own work item, not an afterthought of swapping shims.
+
+**Remaining Open Questions (§7), triaged:**
+- **Resolved:** #1 (guardrail unstubbing, ADR-019), #3 (tool execution sandboxing,
+  ADR-016), #5 (fine-tune promotion criteria, ADR-020), #6 (guardrail_output wiring,
+  ADR-014).
+- **Deliberately deferred, not blocking:** #2 (synthetic vs. real incident data — needs
+  a licensing check before sourcing real postmortems), #7 (multi-corpus fan-out — no
+  real incident has needed it yet), #9 (`diagnose` re-entry behavior — partially
+  de-risked by Feature 09's wiring, still unscoped for `execute -(failure)->diagnose`),
+  #10 (HTTP API layer — never designed, needed before any human/UI can actually drive a
+  run), #11 (no retry cap on `execute -(failure)->diagnose` — a real robustness gap, not
+  just a missing nicety).
+- **Placeholders awaiting real data, by design:** #4 (self-RAG retry cap), #8 (relevance
+  threshold), #12 (rate-limit caps), #13 (guardrail thresholds), #14 (promotion margin) —
+  all five share the same shape (a hardcoded number with no empirical basis) and should
+  be revisited together once a real eval baseline exists, since they likely interact
+  (e.g., a tighter relevance threshold changes how often the retry cap is hit).
+- **The structural one:** #15 (sandbox dependency shims) — now has a complete addendum
+  trail through ADR-021 covering every shim added across all 14 features (Features 01,
+  02, 03, 04, 05, 06, 09, 10, 12, 13, 14). Closing it is the prerequisite for treating
+  any other "Resolved" item above as more than "resolved against a faithful stand-in."
+
+**If this project continued:** the honest next roadmap item is not a 15th feature inside
+this sandbox, but the ADR-021 retrofit pass itself — swap every shim for its real
+package on a machine with PyPI/network/Docker access, re-run all 190 tests against real
+dependencies, and only then let the eval harness (Pillar 4) produce its first real
+baseline. Everything in Open Questions #4/#8/#12/#13/#14 is downstream of that baseline
+existing.
