@@ -1,8 +1,8 @@
 # Feature 04 — Corpus Ingestion + `router` Node
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
-**PMA sections touched:** ADR-010 (new, retrofit), §3 Pillar 1, §6 Feature Log, §9 item 4
+**Status:** Done — implemented and tested (against sandbox shims; see Implementation Status below)
+**PMA sections touched:** ADR-010, ADR-021 (addendum), §3 Pillar 1, §6 Feature Log, §7 (Open Question #15 addendum), §9 item 4
 
 ## Feature Description
 
@@ -151,3 +151,79 @@ def test_router_uses_client_factory(mock_client_factory):
     router's LLM call."""
     ...
 ```
+
+## Implementation Status (real code/tests, sandbox-constrained)
+
+**Implemented:**
+- `corpora/{runbooks,postmortems,infra_code_docs}/` — 3 synthetic markdown files per
+  corpus (9 total), cross-referencing each other (e.g. a postmortem references the
+  runbook whose triage steps it informed) so a future routing-*accuracy* eval has
+  realistic signal to score, not just placeholder text.
+- `src/ingestion/document_store.py` — `InMemoryDocumentStore`, a new stdlib stand-in
+  for the `documents` pgvector table ADR-010 specifies. Keyed by `content_hash()`
+  (SHA-256 of the markdown content) so `upsert()` is idempotent — re-ingesting
+  unchanged files does not duplicate rows. This is a **new ADR-021 addendum**, not a
+  new ADR (same rationale as Feature 02's `langsmith_registry.py` shim): this sandbox
+  has neither `psycopg2` nor a reachable Postgres instance, so the real table cannot
+  be exercised here.
+- `scripts/ingest_corpora.py` — `ingest_corpus(corpus, store, root=...)` and
+  `ingest_all(store, root=...)`, walking `corpora/<corpus>/*.md`, embedding each file
+  via `client_factory.get_embedding_client(...)`, and upserting into the store.
+  `make ingest` entry point added.
+- `src/graph/nodes/router.py` — `router(state)` makes one structured-output call via
+  `client_factory.get_chat_client(model="sentinel-router")`, parses the JSON
+  `{"route": ...}` response, and raises `RouterError` (not a silent default) if the
+  response is missing, non-JSON, or not one of `VALID_ROUTES`. Reads
+  `state["raw_alert"]` directly in v1, per this file's Forward Note.
+- `src/graph/build.py` — `router` placeholder replaced with the real node; graph now
+  compiles `guardrail_input -(safe)-> router -> retriever -(placeholder)-> END`,
+  `-(unsafe)-> reject -> END`. `_retriever_placeholder` plays the same role
+  `_router_placeholder` played before this feature, pending Feature 05.
+- `tests/graph/nodes/test_router.py`, `tests/ingestion/test_document_store.py`,
+  `tests/ingestion/test_ingest_corpora.py` — all `unittest.TestCase`-based, covering
+  both Gherkin scenarios for ingestion (tagging, idempotency) and both for the router
+  (single-route write, gateway-only construction), plus error-path cases (invalid
+  route, missing `route` key, non-JSON response) beyond what the original skeleton
+  enumerated.
+- `tests/graph/test_skeleton.py` — updated: the safe-path integration test now mocks
+  both `guardrail_check` and `router`'s `get_chat_client`, asserting the graph runs
+  all the way through `router` into the `retriever` placeholder and `state.route` is
+  set; the unsafe-path test now additionally asserts `state.route` stays `None`
+  (confirms `router` never ran on the rejected path).
+
+**Deviations from the original skeleton:**
+- The skeleton's PyTest stubs didn't anticipate that wiring `router` into `build.py`
+  would require updating the *existing* `test_skeleton.py` safe-path test (it now
+  executes past `router` for the first time) — this was necessary, not optional, since
+  the old test would otherwise hit a real, unmocked gateway call mid-run.
+- A new `_retriever_placeholder` node (mirroring Feature 03's `_router_placeholder`
+  pattern) was added to `build.py`, not called out explicitly in ADR-010's "Router node
+  location" bullet, to keep the graph compilable end-to-end ahead of Feature 05.
+
+**Verification performed:** `python3 -m unittest discover -s tests` → 54/54 passing;
+`bash scripts/lint_gateway_usage.sh` / `make lint` → passed; `make eval` → passed
+(unchanged, no-baseline notice still accurate); `python3 scripts/ingest_corpora.py` run
+directly against the real `corpora/` tree → fails with a clear, expected
+`GatewayConfigError` (`LITELLM_PROXY_URL` unset in this sandbox) rather than a silent
+no-op or an unhandled traceback, confirming the script's own error handling (not just
+its mocked-test path) behaves correctly when the real gateway isn't reachable.
+
+**Definition of Done checklist (§8.5):**
+- [x] 1. PMA sections updated in this same pass (ADR-021 addendum, Feature Log,
+      §9 item 4 — see PROJECT_MEMORY.md).
+- [x] 2. Both Gherkin scenario pairs (ingestion tagging/idempotency, router
+      single-route/gateway-compliance) pass in the Deterministic Tier.
+- [x] 3. New nodes (`router`) and the new ingestion module each have unit tests; no
+      cycle/interrupt boundary is touched by this feature, so no Postgres
+      integration test applies here.
+- [ ] 4. Probabilistic Tier: not yet applicable — `router`'s classification *accuracy*
+      (vs. routing *mechanics*, which is covered) has no real model to score yet in
+      this sandbox; tracked under the same Open Question #15 swap, not skipped
+      silently.
+- [x] 5. No new LangSmith structural assertion surfaces beyond what Feature 01-03
+      already established (gateway metadata, node order) — `router` follows the same
+      `client_factory` call pattern those assertions already cover.
+- [x] 6. Feature Log row updated with PMA-sections-touched (see PROJECT_MEMORY.md §6).
+- [ ] **Real-package parity (Open Question #15) not yet verified** — `document_store.py`
+      has never been run against real `psycopg2`/pgvector, same standing caveat as
+      every other ADR-021 shim.

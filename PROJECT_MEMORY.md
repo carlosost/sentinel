@@ -830,7 +830,7 @@ guardrail_output -(safe, post-execution)-> END
 | `feature-01-infra-bootstrap` | docker-compose infra, `client_factory.py`, `guardrail_check()` stub, `IncidentState` schema, empty entry→END graph; implemented against stdlib shims (ADR-021) for `langgraph`/`langchain-openai`/`pytest` due to sandbox PyPI block; 14/14 tests passing via `python3 -m unittest`; root `Dockerfile`/`Makefile` + compose `app` service added (ADR-022) for running the real-dependency stack outside this sandbox | Phase 4 | **Done** | ADR-007 (new), ADR-021 (new), ADR-022 (new), §3 Pillar 3, §3 Pillar 5, §7 (new Open Question #15), §9 item 1 |
 | `feature-02-eval-harness` | `evals/golden_incidents.jsonl` (21 incidents), `evals/judge_prompt.md`, `src/evals/{dataset,judge_prompt,evaluator,langsmith_registry}.py`, `scripts/run_eval.py`, `make eval`; LangSmith registry implemented against a stdlib shim (ADR-021) since the sandbox has no PyPI egress for the real `langsmith` package; ragas wiring deferred — no real retriever/diagnosis exists yet to score (Pillar Impact caveat); 28/28 tests passing via `python3 -m unittest` (14 carried over from Feature 01 + 14 new) | Phase 4 | **Done** | ADR-008, ADR-021, §3 Pillar 4, §7 (Open Question #15 addendum), §9 item 2 |
 | `feature-03-guardrail-input-node` | `guardrail_input`/`reject` nodes (`src/graph/nodes/`); corrects §5.2 to include the rejection branch; `src/graph/_compat.py` gained `add_conditional_edges` (ADR-021 addendum — the shim only supported linear chains before this, but Feature 03 needs real branching) so `guardrail_input -(safe)-> router`, `-(unsafe)-> reject` compiles for real; `router` is a placeholder node (`_router_placeholder` in build.py) until Feature 04; 39/39 tests passing via `python3 -m unittest` | Phase 4 | **Done** | ADR-009, ADR-021 (addendum), §5.1, §5.2, §3 Pillar 3, §9 item 3 |
-| `feature-04-ingestion-router-node` | Corpus ingestion into pgvector + `router` node; corrects Pillar 1 prose to single-corpus routing | Phase 4 | In Progress | ADR-010 (new, retrofit), §3 Pillar 1, §9 item 4 |
+| `feature-04-ingestion-router-node` | `corpora/{runbooks,postmortems,infra_code_docs}/` (9 synthetic markdown files), `src/ingestion/document_store.py` (`InMemoryDocumentStore` — new stdlib stand-in for the pgvector `documents` table, ADR-021 addendum), `scripts/ingest_corpora.py` (+ `make ingest`), `src/graph/nodes/router.py` (real node replacing the Feature 03 placeholder; raises `RouterError` rather than defaulting on an invalid/missing classification); `build.py` now compiles `guardrail_input -(safe)-> router -> retriever(placeholder)`; corrects Pillar 1 prose to single-corpus routing; 54/54 tests passing via `python3 -m unittest` (54 = 39 carried over from Feature 03 + 15 new) | Phase 4 | **Done** | ADR-010, ADR-021 (addendum), §3 Pillar 1, §7 (Open Question #15 addendum), §9 item 4 |
 | `feature-05-retriever-reranker-nodes` | `retriever` (pgvector top-k=20) + `reranker` (bge-reranker-base top-k=5) nodes; pins document dict shape | Phase 4 | In Progress | ADR-011 (new), §3 Pillar 1, §3 Pillar 4, §9 item 5 |
 | `feature-06-grade-documents-self-rag` | `grade_documents` node + self-RAG retry loop; adds `current_query` field and retry-exhaustion behavior | Phase 4 | In Progress | ADR-012 (new), §5.1, §3 Pillar 1, §9 item 6 |
 | `feature-07-diagnose-propose-action-nodes` | `diagnose` + `propose_action` nodes; adds tool registry, `side_effecting` flag, `diagnosis_confidence` field | Phase 4 | In Progress | ADR-013 (new), §5.1, §3 Pillar 1, §3 Pillar 2, §3 Pillar 4, §9 item 7 |
@@ -943,6 +943,17 @@ guardrail_output -(safe, post-execution)-> END
     assumed. Cycles are still unsupported (`compile()` does a static DFS across
     every conditional branch and raises on any revisit) — still blocking for
     Feature 06's self-RAG retry loop.
+    **Addendum (Feature 04):** a fourth shim, `src/ingestion/document_store.py`'s
+    `InMemoryDocumentStore`, stands in for the Postgres+pgvector `documents` table
+    ADR-010 specifies — this sandbox has neither `psycopg2` nor a reachable Postgres
+    instance. It preserves the table's row shape and its one load-bearing behavior for
+    this feature (idempotent upsert keyed on a content hash) but deliberately does
+    not implement the cosine-similarity query the real `retriever` node (Feature 05)
+    will need — that's a SQL-level operation no stdlib stand-in can faithfully
+    represent, so Feature 05 will need its own decision once real pgvector access
+    exists, not an extension of this shim. Swap for real `psycopg2`/pgvector under the
+    same retrofit pass; never exercised against either, and that must be verified, not
+    assumed.
 
 ---
 
@@ -1153,9 +1164,13 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
       `_compat.py` gained `add_conditional_edges` (ADR-021 addendum) to support the
       real branch; `router` is a placeholder pending roadmap item 4; 39/39 tests
       pass via `python3 -m unittest discover -s tests`.
-- [ ] 4. Ingest runbooks, postmortems, and infra/code docs into pgvector, then add the
+- [x] 4. Ingest runbooks, postmortems, and infra/code docs into pgvector, then add the
       `router` node that classifies the incoming query against those three corpora
-      and selects a retriever.
+      and selects a retriever. **Done** — `corpora/` (9 synthetic markdown files),
+      `src/ingestion/document_store.py` (`InMemoryDocumentStore`, ADR-021
+      addendum — stdlib stand-in for the pgvector `documents` table), real
+      `router` node (ADR-010) replacing the Feature 03 placeholder; 54/54 tests
+      pass via `python3 -m unittest discover -s tests`.
 - [ ] 5. Add the `retriever` and `reranker` nodes: pgvector similarity search at
       top-k=20 followed by `bge-reranker-base` cross-encoder re-ranking down to
       top-k=5.

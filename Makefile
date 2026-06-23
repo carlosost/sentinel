@@ -30,6 +30,9 @@
 #    make test-local        Deterministic-tier tests via stdlib unittest (no Docker)
 #    make lint               Run the ADR-006 gateway-usage lint script
 #    make eval               Run the eval harness (Probabilistic Tier, ADR-008)
+#    make ingest             Ingest corpora/ into the documents store (ADR-010;
+#                             fails in this sandbox — no LiteLLM proxy/real
+#                             embedding client here, see Open Question #15)
 #    make shell               Interactive shell inside the app image
 #    make shell-db             psql session inside the postgres container
 #    make logs                  Tail infra service logs
@@ -63,7 +66,7 @@ RESET  := \033[0m
 # ------------------------------------------------------------------------------
 .PHONY: \
   build up down clean \
-  smoke test test-local lint eval \
+  smoke test test-local lint eval ingest \
   shell shell-db logs \
   help
 
@@ -141,6 +144,11 @@ lint:
 eval:
 	@printf "$(CYAN)$(BOLD)▶ Running eval harness...$(RESET)\n"
 	@python3 scripts/run_eval.py
+
+## ingest       |  Ingest corpora/ into the documents store (ADR-010)
+ingest:
+	@printf "$(CYAN)$(BOLD)▶ Running corpus ingestion...$(RESET)\n"
+	@python3 scripts/ingest_corpora.py
 
 # ==============================================================================
 #  HELP
