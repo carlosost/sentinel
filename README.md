@@ -2,9 +2,9 @@
 
 Sentinel is a learning project for building a production-grade LLM application from
 scratch with LangGraph, LangSmith, LangChain, and Advanced RAG — built under a strict
-Spec-Driven Development → BDD → TDD workflow. It is currently in **Phase 4: feature
-implementation**, design-complete for all 14 roadmap items, with code/tests not yet
-written.
+Spec-Driven Development → BDD → TDD workflow. All 14 Phase 4 roadmap items are
+implemented and tested (190/190 tests passing); see `PROJECT_MEMORY.md` §10 for the
+project retrospective.
 
 ## What it does
 
@@ -132,8 +132,20 @@ A feature is only checked off the roadmap once it passes the full Definition of 
 in §8.5 — Gherkin scenarios green, unit/integration tests passing, the relevant eval
 baseline met, and the Feature Log row filled in.
 
+## Running it
+
+- `python3 -m unittest discover -s tests` — full Deterministic Tier suite (190/190 passing).
+- `python3 -m pyflakes src tests` (or your preferred linter) — lint check.
+- `scripts/*.py` — most exit non-zero or print an explicit sandbox-limitation
+  message rather than silently faking results; see PROJECT_MEMORY.md §10 for
+  which scripts do which, and why.
+
 ## Status
 
-Design-complete through all 14 Phase 4 roadmap items (ADR-007 through ADR-020) — see
-§6 (Feature Log) and §9 (Roadmap) of `PROJECT_MEMORY.md`. No application code or
-tests have been written yet; that's the next phase of work.
+All 14 Phase 4 roadmap items are **done** (ADR-007 through ADR-020) — see §6
+(Feature Log), §9 (Roadmap), and §10 (Retrospective) of `PROJECT_MEMORY.md`.
+Every feature is implemented and covered by Deterministic Tier tests, but none
+has run against its real external dependency (LLM, vector DB, LangSmith, etc.)
+— this sandbox has no PyPI/network/Docker egress, so every such dependency is
+a stdlib stand-in shim (ADR-021) that raises `NotImplementedError`. That ADR-021
+retrofit pass — swapping shims for real packages — is the honest next step.
