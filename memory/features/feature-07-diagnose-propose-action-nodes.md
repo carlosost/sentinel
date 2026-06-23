@@ -1,7 +1,7 @@
 # Feature 07 — `diagnose` + `propose_action` Nodes
 
 **Phase introduced:** Phase 4
-**Status:** In Progress (design complete; implementation/tests pending)
+**Status:** Done
 **PMA sections touched:** ADR-013 (new), §5.1, §3 Pillar 1, §3 Pillar 2, §3 Pillar 4,
 §7 (new Open Question), §6 Feature Log, §9 item 7
 
@@ -160,3 +160,78 @@ def test_propose_action_uses_client_factory(mock_client_factory):
     """Deterministic Tier. Enforces ADR-003/006 on the propose_action call."""
     ...
 ```
+
+## Implementation Status
+
+### Implemented
+
+- `src/tools/registry.py` (new): static `TOOL_REGISTRY` dict per ADR-013, seeded
+  with the three side-effecting tools + `fetch_additional_logs` (read-only);
+  `get_tool_spec`/`is_side_effecting` helpers; `UnknownToolError` raised on an
+  unrecognized tool name.
+- `src/graph/nodes/diagnose.py` (new): real node replacing
+  `_diagnose_placeholder`. One structured-output call via
+  `get_chat_client(model="sentinel-diagnose")`. `diagnosis_confidence` derived
+  from `state.relevance_grade` against `grade_documents.RELEVANCE_THRESHOLD`
+  (imported, not redefined, so the two thresholds cannot drift) — `"low"`
+  whenever the grade is missing or below threshold (covers both the ordinary
+  low-grade case and ADR-012's retry-exhaustion graceful-degradation path),
+  `"high"` otherwise. `DiagnoseError` on missing/invalid response.
+- `src/graph/nodes/propose_action.py` (new): real node. One structured-output
+  call via `get_chat_client(model="sentinel-propose-action")` returning
+  `{"tool": str, "args": dict}` only — `side_effecting` is always looked up
+  from `src.tools.registry` by tool name afterward, never trusted from the LLM
+  response even if present in its JSON (the feature's one new design decision
+  beyond ADR-013's prose; documented in the module docstring). `args` defaults
+  to `{}` if the response omits it. `ProposeActionError` on missing/invalid
+  `tool`, on non-JSON response, or on an unknown tool name.
+- `src/graph/state.py`: added `diagnosis_confidence: Optional[Literal["high",
+  "low"]]` (ADR-013) — the one field §5.1 had already pinned but `state.py`
+  itself hadn't caught up to yet.
+- `src/graph/build.py`: replaced `_diagnose_placeholder` with the real
+  `diagnose`/`propose_action` nodes; `diagnose -> propose_action ->
+  guardrail_output`. Added `_guardrail_output_placeholder` for roadmap item 8.
+
+### Deviations from the PyTest skeletons
+
+- Added tests beyond the skeletons: non-JSON/missing-field error cases for both
+  nodes; a dedicated test proving a forged `"side_effecting"` in the LLM
+  response is ignored in favor of the registry lookup (the trust-boundary
+  decision called out above); a registry test confirming at least one
+  read-only tool exists (so §5.2's read-only `guardrail_output -> execute`
+  branch is reachable at all, per this feature's own Conflict Check note).
+- `tests/graph/test_skeleton.py`: both full-graph integration tests (high
+  relevance and the self-RAG retry-exhaustion path) were extended with mocks
+  for `diagnose`/`propose_action`'s gateway calls and now assert
+  `diagnosis`/`diagnosis_confidence`/`proposed_action` reach their expected
+  values at the end of a full run through `guardrail_output`'s placeholder.
+- `scripts/run_eval.py`: its "no quality baseline yet" message referenced
+  "retriever and diagnose/propose_action nodes" as not-yet-existing — now
+  stale since this feature builds them. Updated to say the harness still
+  needs to be wired to actually invoke the live graph against
+  `golden_incidents.jsonl`, which is a separate, not-yet-scheduled piece of
+  work.
+
+### Verification
+
+- `python3 -m unittest discover -s tests` → **101/101 passing** (up from 84).
+- `bash scripts/lint_gateway_usage.sh` → passed.
+- `python3 scripts/run_eval.py` → passed (harness mechanics only; no baseline
+  recorded yet — see deviation note above).
+
+### Definition of Done
+
+- [x] ADR-013 (pre-drafted in PROJECT_MEMORY.md) re-verified against the
+      actual Feature 04-06 codebase and confirmed accurate — implemented as
+      specified, with one additive trust-boundary decision documented.
+- [x] Tool registry implemented with at least one read-only tool.
+- [x] `diagnose`/`propose_action` nodes implemented per ADR-013.
+- [x] `diagnosis_confidence` added to `IncidentState` (closing the
+      scaffolding lag noted in this feature's Conflict Check).
+- [x] `build.py` rewired; new placeholder added for roadmap item 8.
+- [x] All Gherkin scenarios covered by passing tests, plus additional edge
+      cases.
+- [x] Full test suite, lint, and eval harness all pass.
+- [x] `PROJECT_MEMORY.md` updated (Feature Log, §9 item 7; ADR-013 and the
+      Pillar 1/2/4 "Implementation status (Feature 07)" notes were already
+      pre-drafted and required no correction).

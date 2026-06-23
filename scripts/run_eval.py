@@ -53,11 +53,13 @@ def main() -> int:
 
     print()
     print(
-        "No quality baseline yet: ragas (context_precision/context_recall/"
-        "faithfulness) and the end-to-end judge pass rate need a real "
-        "retriever and diagnose/propose_action nodes to score against "
-        "(roadmap items 4-11). This run only validates harness mechanics — "
-        "see ADR-008 and Feature 02's Pillar Impact caveat."
+        "No quality baseline yet: retriever/reranker/diagnose/propose_action "
+        "(roadmap items 4-7) all exist now, but this script never invokes the "
+        "real graph against golden_incidents.jsonl — ragas "
+        "(context_precision/context_recall/faithfulness) and the end-to-end "
+        "judge pass rate still need that wiring before a first baseline can be "
+        "recorded. This run only validates harness mechanics — see ADR-008 and "
+        "Feature 02's Pillar Impact caveat."
     )
     print()
     print("Eval harness mechanics: PASS")

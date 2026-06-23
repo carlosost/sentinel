@@ -9,13 +9,17 @@ an unsafe verdict) or `router` (otherwise). Feature 04 (ADR-010) replaced the
 corpus and writes `state.route`. Feature 05 (ADR-011) replaced `_retriever_placeholder`
 with the real `retriever` and `reranker` nodes: top-k=20 cosine-similarity search
 against the routed corpus, then cross-encoder re-ranking to top-k=5. Feature 06
-(ADR-012) replaces `_grade_documents_placeholder` with the real `grade_documents`
-node and introduces the graph's first real cycle:
+(ADR-012) replaced `_grade_documents_placeholder` with the real `grade_documents`
+node and introduced the graph's first real cycle:
 `grade_documents -(low relevance, retry budget remaining)-> router`, bounded by
 `grade_documents`' own retry cap (never by `_compat.py`'s runtime safety net — see
-that module's docstring). `diagnose` itself doesn't exist yet (roadmap item 7) —
-`_diagnose_placeholder` stands in for it, the same placeholder role
-`_grade_documents_placeholder` played here until this feature. The Postgres
+that module's docstring). Feature 07 (ADR-013) replaces `_diagnose_placeholder`
+with the real `diagnose` and `propose_action` nodes: `diagnose` produces a root-
+cause diagnosis plus a `diagnosis_confidence` hedge signal, and `propose_action`
+produces a registry-validated (`src/tools/registry.py`) `{tool, args,
+side_effecting}` proposal. `guardrail_output` itself doesn't exist yet (roadmap
+item 8) — `_guardrail_output_placeholder` stands in for it, the same placeholder
+role `_diagnose_placeholder` played here until this feature. The Postgres
 checkpointer (ADR-002) is not wired in yet: per ADR-015/Feature 09, that wiring
 happens once `await_human_approval` exists and there is an actual interrupt
 boundary to persist across. Until then the graph compiles with no checkpointer
@@ -43,6 +47,8 @@ from src.graph.nodes.guardrail_input import (
     guardrail_input,
     guardrail_input_route,
 )
+from src.graph.nodes.diagnose import diagnose
+from src.graph.nodes.propose_action import propose_action
 from src.graph.nodes.reject import reject
 from src.graph.nodes.reranker import reranker
 from src.graph.nodes.retriever import retriever
@@ -50,9 +56,9 @@ from src.graph.nodes.router import router
 from src.graph.state import IncidentState
 
 
-def _diagnose_placeholder(state: IncidentState) -> dict:
-    """Placeholder for the `diagnose` node (roadmap item 7 / Feature 07). Routes
-    straight to END until root-cause diagnosis + remediation proposal exist."""
+def _guardrail_output_placeholder(state: IncidentState) -> dict:
+    """Placeholder for the `guardrail_output` node (roadmap item 8 / Feature 08).
+    Routes straight to END until output moderation + rejection branches exist."""
     return {}
 
 
@@ -66,7 +72,9 @@ def build_graph() -> StateGraph:
     graph.add_node("retriever", retriever)
     graph.add_node("reranker", reranker)
     graph.add_node("grade_documents", grade_documents)
-    graph.add_node("diagnose", _diagnose_placeholder)
+    graph.add_node("diagnose", diagnose)
+    graph.add_node("propose_action", propose_action)
+    graph.add_node("guardrail_output", _guardrail_output_placeholder)
 
     graph.add_edge(START, "guardrail_input")
     graph.add_conditional_edges(
@@ -83,6 +91,8 @@ def build_graph() -> StateGraph:
         grade_documents_route,
         {ROUTE_RETRY: "router", ROUTE_PROCEED: "diagnose"},
     )
-    graph.add_edge("diagnose", END)
+    graph.add_edge("diagnose", "propose_action")
+    graph.add_edge("propose_action", "guardrail_output")
+    graph.add_edge("guardrail_output", END)
 
     return graph.compile()

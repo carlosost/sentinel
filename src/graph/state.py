@@ -42,6 +42,13 @@ class IncidentState(TypedDict):
     diagnosis: Optional[str]
     proposed_action: Optional[dict]
 
+    # ADR-013 (Feature 07) — additive field. Set by `diagnose`: "low" whenever
+    # `relevance_grade` is below grade_documents' RELEVANCE_THRESHOLD (including
+    # the retry-exhaustion graceful-degradation path), "high" otherwise. A
+    # structured hedge signal so later nodes/tests never need to parse the
+    # `diagnosis` text to know whether to discount it.
+    diagnosis_confidence: Optional[Literal["high", "low"]]
+
     # Pillar 2 (HITL) — populated once await_human_approval/execute land (items 9-10).
     human_decision: Optional[dict]
     execution_result: Optional[dict]
