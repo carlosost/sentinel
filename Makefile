@@ -10,33 +10,35 @@
 #  Two ways to run tests — pick based on what's available:
 #
 #    make test         Full suite, real deps, inside Docker (langgraph,
-#                       langchain-openai, pytest — via requirements.txt in the
-#                       image). Requires Docker.
-#    make test-local    Same test files, run with stdlib `unittest` directly on
-#                       the host — no Docker, no network required. This is how
-#                       Feature 01 was actually verified in a sandbox with no
-#                       PyPI egress (ADR-021); it exercises the stdlib shims in
-#                       src/gateway/client_factory.py and src/graph/_compat.py,
-#                       not the real langgraph/langchain-openai libraries.
+#                      langchain-openai, pytest — via requirements.txt in the
+#                      image). Requires Docker.
+#    make test-local   Same test files, run with stdlib `unittest` directly on
+#                      the host — no Docker, no network required. This is how
+#                      Feature 01 was actually verified in a sandbox with no
+#                      PyPI egress (ADR-021); it exercises the stdlib shims in
+#                      src/gateway/client_factory.py and src/graph/_compat.py,
+#                      not the real langgraph/langchain-openai libraries.
 #
 #  Quick reference:
 #
+#    make check-env     Verify infra/.env has real LLM provider credentials
+#                         (run automatically before up/smoke/test/shell)
 #    make build         Build the app image
-#    make up             Start Postgres + Redis + LiteLLM (infra only)
-#    make down           Stop infra containers (volumes preserved)
-#    make clean           Stop infra AND wipe all Docker volumes
-#    make smoke           One-shot smoke check (graph builds, gateway/guardrail wired)
-#    make test             Full pytest suite inside Docker (real deps)
-#    make test-local        Deterministic-tier tests via stdlib unittest (no Docker)
-#    make lint               Run the ADR-006 gateway-usage lint script
-#    make eval               Run the eval harness (Probabilistic Tier, ADR-008)
-#    make ingest             Ingest corpora/ into the documents store (ADR-010;
-#                             fails in this sandbox — no LiteLLM proxy/real
-#                             embedding client here, see Open Question #15)
-#    make shell               Interactive shell inside the app image
-#    make shell-db             psql session inside the postgres container
-#    make logs                  Tail infra service logs
-#    make help                   Print this help screen
+#    make up            Start Postgres + Redis + LiteLLM (infra only)
+#    make down          Stop infra containers (volumes preserved)
+#    make clean         Stop infra AND wipe all Docker volumes
+#    make smoke         One-shot smoke check (graph builds, gateway/guardrail wired)
+#    make test          Full pytest suite inside Docker (real deps)
+#    make test-local    Deterministic-tier tests via stdlib unittest (no Docker)
+#    make lint          Run the ADR-006 gateway-usage lint script
+#    make eval          Run the eval harness (Probabilistic Tier, ADR-008)
+#    make ingest        Ingest corpora/ into the documents store (ADR-010;
+#                         fails in this sandbox — no LiteLLM proxy/real
+#                         embedding client here, see Open Question #15)
+#    make shell         Interactive shell inside the app image
+#    make shell-db      psql session inside the postgres container
+#    make logs          Tail infra service logs
+#    make help          Print this help screen
 #
 # ==============================================================================
 
@@ -45,9 +47,14 @@
 # ------------------------------------------------------------------------------
 
 COMPOSE_FILE     := infra/docker-compose.yml
+ENV_FILE         := infra/.env
 
-# Compose command — supports both `docker compose` (v2) and legacy `docker-compose`
-COMPOSE          := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose") -f $(COMPOSE_FILE)
+# Compose command — supports both `docker compose` (v2) and legacy `docker-compose`.
+# --env-file is explicit (the bare `docker compose` default only looks for a
+# `.env` next to wherever it's invoked from) so infra/.env is what actually
+# feeds the ${VAR:?...} required-credential checks in docker-compose.yml,
+# regardless of where `make` is run from.
+COMPOSE          := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose") -f $(COMPOSE_FILE) --env-file $(ENV_FILE)
 
 DB_SERVICE       := postgres
 DB_CONTAINER     := $(shell basename $(CURDIR))-$(DB_SERVICE)-1
@@ -65,12 +72,20 @@ RESET  := \033[0m
 # .PHONY — prevents make from confusing targets with files of the same name
 # ------------------------------------------------------------------------------
 .PHONY: \
-  build up down clean \
+  check-env build up down clean \
   smoke test test-local lint eval ingest \
   shell shell-db logs \
   help
 
 .DEFAULT_GOAL := help
+
+# ==============================================================================
+#  CREDENTIAL PREFLIGHT
+# ==============================================================================
+
+## check-env    |  Verify infra/.env has real (non-placeholder) LLM provider keys
+check-env:
+	@bash scripts/check_env.sh
 
 # ==============================================================================
 #  BUILD & INFRA LIFECYCLE
@@ -83,7 +98,7 @@ build:
 	@printf "$(GREEN)✓ Image built.$(RESET)\n"
 
 ## up           |  Start Postgres, Redis, and the LiteLLM proxy (infra only)
-up:
+up: check-env
 	@printf "$(CYAN)$(BOLD)▶ Starting infra (postgres, redis, litellm)...$(RESET)\n"
 	@$(COMPOSE) up --detach postgres redis litellm
 	@printf "$(GREEN)✓ Infra running. (No app/API server yet — see Open Question #10.)$(RESET)\n"
@@ -105,17 +120,17 @@ clean:
 # ==============================================================================
 
 ## smoke        |  One-shot smoke check: graph builds, gateway/guardrail wired
-smoke:
+smoke: check-env
 	@printf "$(CYAN)$(BOLD)▶ Running smoke check...$(RESET)\n"
 	@$(COMPOSE) run --rm app smoke
 
 ## test         |  Full pytest suite inside Docker (real langgraph/langchain-openai/pytest)
-test:
+test: check-env
 	@printf "$(CYAN)$(BOLD)▶ Running full test suite (Docker, real deps)...$(RESET)\n"
 	@$(COMPOSE) run --rm app test
 
 ## shell        |  Interactive shell inside the app image
-shell:
+shell: check-env
 	@$(COMPOSE) run --rm app shell
 
 ## shell-db     |  Open a psql session inside the postgres container

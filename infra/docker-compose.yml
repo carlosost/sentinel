@@ -8,6 +8,14 @@
 # no long-running server to front yet (Open Question #10 — no HTTP API designed),
 # so its default command is a one-shot smoke check (see scripts/entrypoint.sh);
 # `make test`/`make shell` override the command for real work.
+#
+# Credentials: `litellm`'s provider keys (OPENAI_API_KEY, ANTHROPIC_API_KEY,
+# TOGETHERAI_API_KEY, COHERE_API_KEY) come from infra/.env — copy
+# infra/.env.example to infra/.env and fill in real values. `make check-env`
+# (run automatically by `make up`/`smoke`/`test`/`shell`) validates this
+# up front with a readable error; the `${VAR:?...}` defaults below are a
+# second safety net in case this file is ever run with plain `docker compose`
+# instead of `make`.
 
 services:
   postgres:
@@ -40,6 +48,10 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Missing OPENAI_API_KEY — copy infra/.env.example to infra/.env and fill it in, or run: make check-env}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Missing ANTHROPIC_API_KEY — copy infra/.env.example to infra/.env and fill it in, or run: make check-env}
+      TOGETHERAI_API_KEY: ${TOGETHERAI_API_KEY:?Missing TOGETHERAI_API_KEY — copy infra/.env.example to infra/.env and fill it in, or run: make check-env}
+      COHERE_API_KEY: ${COHERE_API_KEY:?Missing COHERE_API_KEY — copy infra/.env.example to infra/.env and fill it in, or run: make check-env}
 
   app:
     build:
