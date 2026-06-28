@@ -129,6 +129,47 @@ Feature: LiteLLM proxy production behaviors
     Then its metadata includes the run's trace_id
 ```
 
+**Appended 2026-06-28 (ADR-023, Feature 15, Phase 3) — additive, not a retrofit of
+the scenarios above.** The six chat `*-fallback` aliases and the embedding
+`-fallback` alias this ADR's fallback mechanism already established now resolve to
+local Ollama-served models instead of paid Anthropic/Cohere ones (ADR-023); the
+fallback *mechanism* tested above is unchanged, so these scenarios extend this
+feature's existing Gherkin rather than belonging in a new feature file. `@gateway
+@fallback`-tagged contract tests live in
+`tests/gateway/test_local_fallback_contract.py` (Probabilistic Tier — real
+Ollama/LiteLLM required, skips with a printed reason otherwise), not alongside this
+feature's `MockLiteLLMProxy`-backed Deterministic Tier tests, since they exercise
+real local-model output rather than simulated proxy behavior.
+
+```gherkin
+@gateway @fallback
+Feature: chat and embedding fallbacks resolve to local open-weights models
+
+  Scenario: a fallback alias resolves to a local Ollama-served model, not a paid API
+    Given litellm_config.yaml's sentinel-router-fallback alias
+    When the proxy resolves it
+    Then the resolved model string starts with "ollama_chat/"
+    And no Anthropic or Cohere credential is required for this alias to function
+
+  Scenario: a local fallback model's response still parses as the node expects
+    Given the OpenAI-backed primary for a chat alias is forced to fail
+    When the proxy fails over to the local Ollama-served fallback
+    Then the raw response is valid JSON with the same keys the primary would have returned
+    And the calling node's existing parsing/validation code requires no changes
+
+  Scenario: local fallback degrades gracefully under JSON-mode enforcement
+    Given a fallback alias configured with format: json
+    When the local model is asked to classify or score something
+    Then the response contains no markdown fencing or leading prose
+
+  Scenario: an embedding-dimension mismatch fails loudly, never silently
+    Given the embedding fallback (bge-m3, 1024-dim) answers a query
+    And the corpus was ingested with the primary embedding model (1536-dim)
+    When the query embedding is compared against corpus rows in vector_search.search
+    Then EmbeddingDimensionMismatchError is raised
+    And no similarity-ranked result is returned from the mismatched comparison
+```
+
 ## PyTest Skeletons (all Deterministic Tier — proxy config/behavior contracts, simulated provider failures and mocked cache state; whether fallback/caching changes response *quality* is out of scope, per §8.2's Pillar 5 row: "n/a, gateway behavior is deterministic by design")
 
 ```python
@@ -242,3 +283,72 @@ Question #15's scope.
       implementation-status bullets were already accurately pre-drafted —
       confirmed correct on read, no edit needed.
 - [x] This file's Status marked Done.
+
+---
+
+**Appended 2026-06-28 (post-ADR-023 Phase 4.5 usage review) — additive, this
+feature's `Status: Done` and everything above is untouched.** After Feature 15's
+local-fallback migration closed out (ADR-023 Done, shadow instrumentation
+reverted), a usage review was run against this feature's own ADR-018 contract to
+confirm the LiteLLM gateway is still being used correctly. Full review:
+`LITELLM_USAGE_REVIEW.md` (repo root). Summary relevant to this feature:
+
+- The alias-indirection/fallback/caching/rate-limit/trace_id contract this ADR
+  established is fully intact. `tests/gateway/test_litellm_config_yaml.py` and
+  `tests/gateway/test_litellm_production_config.py` (both owned by this feature)
+  still pass unchanged; `scripts/lint_gateway_usage.sh` → PASS.
+- The Phase 4.5 revert of Feature 15's temporary shadow instrumentation left
+  `src/gateway/client_factory.py`'s `get_chat_client`/`get_embedding_client` —
+  the two functions this ADR actually governs — byte-for-byte equivalent to their
+  pre-Feature-15 behavior. No drift introduced here by that migration.
+- **One pre-existing gap surfaced, not previously documented anywhere:**
+  `scripts/entrypoint.sh`'s smoke check calls
+  `get_chat_client(model='sentinel-chat')` — `sentinel-chat` is not a real alias in
+  `infra/litellm_config.yaml`'s `model_list` (it was this ADR's own illustrative
+  example name in its original prose, per the "Deviations from spec" note above,
+  but the real config never declared it). This is currently invisible to both this
+  feature's `test_litellm_config_yaml.py` (scans `src/*.py` only, not
+  `scripts/*.sh`) and to `lint_gateway_usage.sh` (checks for direct SDK usage, not
+  alias correctness) — because `get_chat_client()` itself never validates an
+  alias against the config; only the real proxy or `MockLiteLLMProxy.complete()`
+  would. Harmless today only because nothing in the smoke path calls `.invoke()`.
+  Not fixed here — flagged per this project's "surface, don't silently fix"
+  convention; full detail and a suggested fix are in `LITELLM_USAGE_REVIEW.md` §2.2.
+  Tracked as a candidate new Open Question in `PROJECT_MEMORY.md` if/when picked up.
+
+**Fixed 2026-06-28, same day — closed, not left as a candidate.** Per the
+"more durable fix" the review recommended: `_aliases_referenced_in_source()`
+in `tests/gateway/test_litellm_config_yaml.py` is generalized from a single
+`src/*.py` glob to a list of `(root, glob)` scan targets covering both
+`src/*.py` and `scripts/*.sh`, so any future shell-embedded Python referencing
+a `sentinel-*` alias is caught by the same mechanism, not a second copy-pasted
+scanner. TDD order followed: ran the existing
+`test_every_alias_referenced_in_code_is_declared_with_a_fallback` after
+widening the scan and confirmed it failed red against the unfixed
+`scripts/entrypoint.sh` (`'sentinel-chat' is called in code but missing from
+model_list`) before touching `entrypoint.sh` — proving the test catches the
+real bug, not just passing trivially. Then fixed `entrypoint.sh`'s smoke check
+to `get_chat_client(model='sentinel-router')` (a real alias) and re-ran: green.
+
+**Deviation from the original plan, documented not silently followed:** the
+plan called for a new, separate test method
+(`test_every_alias_referenced_in_scripts_is_declared_with_a_fallback`).
+Implemented instead as a generalization of the *existing* test, since once the
+scan helper covers both `src/` and `scripts/`, the existing assertion already
+exercises exactly the right thing — a second test would have been a
+near-duplicate. The existing test's docstring/module docstring were updated to
+say so explicitly, dated.
+
+**Verification:** isolated run of `tests/gateway/test_litellm_config_yaml.py`
+→ 3/3 passing (same 3 tests, scan widened, no new test added — see deviation
+note); full suite `python3 -m unittest discover -s tests -p "test_*.py"` →
+195/195 passing, 3 correctly skipped (same count as before this fix — a
+scan-coverage widening + a one-line bug fix, not new test cases);
+`bash scripts/lint_gateway_usage.sh` → PASS; sanity grep confirmed no other
+`scripts/*.sh` file references a `sentinel-*` alias that the widened scan
+would newly trip on (`scripts/check_env.sh`'s `sentinel-*` mentions are inside
+a human-readable error string, not a `model=...` call site, so the regex
+correctly does not match them).
+
+**Status of the gap:** Resolved. `LITELLM_USAGE_REVIEW.md` §2.2 updated to
+point here instead of describing it as open.

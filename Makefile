@@ -24,7 +24,10 @@
 #    make check-env     Verify infra/.env has real LLM provider credentials
 #                         (run automatically before up/smoke/test/shell)
 #    make build         Build the app image
-#    make up            Start Postgres + Redis + LiteLLM (infra only)
+#    make up            Start Postgres + Redis + LiteLLM + Ollama (infra only)
+#    make pull-local-models  Pull local Ollama models for the fallback migration
+#                         (ADR-023, Feature 15 — separate step, not part of `up`
+#                         until Phase 4 cutover, since these are multi-GB pulls)
 #    make down          Stop infra containers (volumes preserved)
 #    make clean         Stop infra AND wipe all Docker volumes
 #    make smoke         One-shot smoke check (graph builds, gateway/guardrail wired)
@@ -74,6 +77,7 @@ RESET  := \033[0m
 .PHONY: \
   check-env build up down clean \
   smoke test test-local lint eval ingest \
+  pull-local-models \
   shell shell-db logs \
   help
 
@@ -97,11 +101,12 @@ build:
 	@$(COMPOSE) build app
 	@printf "$(GREEN)✓ Image built.$(RESET)\n"
 
-## up           |  Start Postgres, Redis, and the LiteLLM proxy (infra only)
+## up           |  Start Postgres, Redis, LiteLLM, and Ollama (infra only)
 up: check-env
-	@printf "$(CYAN)$(BOLD)▶ Starting infra (postgres, redis, litellm)...$(RESET)\n"
-	@$(COMPOSE) up --detach postgres redis litellm
+	@printf "$(CYAN)$(BOLD)▶ Starting infra (postgres, redis, litellm, ollama)...$(RESET)\n"
+	@$(COMPOSE) up --detach postgres redis litellm ollama
 	@printf "$(GREEN)✓ Infra running. (No app/API server yet — see Open Question #10.)$(RESET)\n"
+	@printf "$(YELLOW)  Local fallback models (ADR-023) are not pulled yet — run 'make pull-local-models'.$(RESET)\n"
 
 ## down         |  Stop containers (volumes preserved)
 down:
@@ -139,7 +144,7 @@ shell-db:
 
 ## logs         |  Tail infra service logs  (Ctrl-C to exit)
 logs:
-	@$(COMPOSE) logs --follow postgres redis litellm
+	@$(COMPOSE) logs --follow postgres redis litellm ollama
 
 # ==============================================================================
 #  HOST-ONLY (NO DOCKER REQUIRED)
@@ -164,6 +169,12 @@ eval:
 ingest:
 	@printf "$(CYAN)$(BOLD)▶ Running corpus ingestion...$(RESET)\n"
 	@python3 scripts/ingest_corpora.py
+
+## pull-local-models  |  Pull local Ollama fallback models (ADR-023, Feature 15)
+pull-local-models:
+	@printf "$(CYAN)$(BOLD)▶ Pulling local fallback models into ollama...$(RESET)\n"
+	@bash scripts/pull_local_models.sh
+	@printf "$(GREEN)✓ Local models ready.$(RESET)\n"
 
 # ==============================================================================
 #  HELP

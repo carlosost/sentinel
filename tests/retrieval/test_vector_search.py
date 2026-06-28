@@ -7,7 +7,11 @@ import math
 import unittest
 
 from src.ingestion.document_store import InMemoryDocumentStore
-from src.retrieval.vector_search import cosine_similarity, search
+from src.retrieval.vector_search import (
+    EmbeddingDimensionMismatchError,
+    cosine_similarity,
+    search,
+)
 
 
 class CosineSimilarityTests(unittest.TestCase):
@@ -26,6 +30,15 @@ class CosineSimilarityTests(unittest.TestCase):
     def test_mismatched_length_raises(self):
         with self.assertRaises(ValueError):
             cosine_similarity([1.0], [1.0, 2.0])
+
+    def test_mismatched_length_raises_named_dimension_error(self):
+        """Open Question #16 (ADR-023, Feature 15) resolution: a dimension
+        mismatch — e.g. the embedding fallback (bge-m3, 1024-dim) answering a
+        query against a corpus ingested at 1536-dim — must raise a specific,
+        named error, not an indistinguishable generic ValueError, so this
+        failure mode is identifiable in logs/traces without guessing."""
+        with self.assertRaises(EmbeddingDimensionMismatchError):
+            cosine_similarity([1.0] * 1536, [1.0] * 1024)
 
     def test_known_value(self):
         score = cosine_similarity([1.0, 1.0], [1.0, 0.0])
@@ -61,6 +74,14 @@ class SearchTests(unittest.TestCase):
         results = search(self.store, "postmortems", [1.0, 0.0], k=20)
 
         self.assertEqual(len(results), 1)
+
+    def test_search_raises_dimension_mismatch_instead_of_degrading_silently(self):
+        """Open Question #16 (ADR-023, Feature 15): a query embedding whose
+        dimension doesn't match the corpus's rows (e.g. the embedding
+        fallback firing) must surface as a hard failure through `search`,
+        not a silently truncated/padded comparison."""
+        with self.assertRaises(EmbeddingDimensionMismatchError):
+            search(self.store, "runbooks", [1.0, 0.0, 0.0], k=20)
 
 
 if __name__ == "__main__":

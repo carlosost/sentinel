@@ -34,12 +34,15 @@ fi
 
 # Parallel indexed arrays (not associative — bash 3.2 compatible):
 # REQUIRED_VARS[i] is backed-by description REQUIRED_DESCR[i].
-REQUIRED_VARS=(OPENAI_API_KEY ANTHROPIC_API_KEY TOGETHERAI_API_KEY COHERE_API_KEY)
+#
+# ANTHROPIC_API_KEY and COHERE_API_KEY removed (ADR-023, Feature 15, Phase 2) —
+# the fallback aliases they backed now resolve to local Ollama-served models
+# (infra/litellm_config.yaml), which need no API key. See MIGRATION_PLAN.md /
+# PROJECT_MEMORY.md ADR-023.
+REQUIRED_VARS=(OPENAI_API_KEY TOGETHERAI_API_KEY)
 REQUIRED_DESCR=(
   "sentinel-router, sentinel-grader, sentinel-diagnose, sentinel-propose-action, sentinel-postmortem, sentinel-judge, sentinel-embedding, sentinel-guardrail-fallback"
-  "sentinel-router-fallback, sentinel-grader-fallback, sentinel-diagnose-fallback, sentinel-propose-action-fallback, sentinel-postmortem-fallback, sentinel-judge-fallback"
   "sentinel-guardrail"
-  "sentinel-embedding-fallback"
 )
 
 missing=()
