@@ -44,7 +44,7 @@ assert result['raw_alert'] == 'smoke-test alert'
 verdict = guardrail_check('smoke test', direction='input')
 assert verdict['verdict'] == 'safe'
 
-client = get_chat_client(model='sentinel-chat')
+client = get_chat_client(model='sentinel-router')
 assert client is not None
 
 print('Sentinel image smoke check passed: graph builds, guardrail stub responds, gateway client constructs.')

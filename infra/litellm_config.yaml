@@ -7,6 +7,16 @@
 #
 # `sentinel-guardrail` (Llama Guard 3-8B + a fallback safety model) backs
 # `guardrail_check()` as of Feature 13/ADR-019.
+#
+# ADR-023 (Feature 15, Phase 2): every chat `*-fallback` entry below and
+# `sentinel-embedding-fallback` are now served locally via Ollama
+# (OLLAMA_BASE_URL, infra/docker-compose.yml's `ollama` service) instead of
+# Anthropic/Cohere. `format: json` forces Ollama's grammar-constrained JSON
+# mode — the single highest-leverage mitigation for the "strict JSON, no
+# prose" contract every chat node depends on (see Open Question #16/#17 and
+# memory/features/feature-15-local-fallback-migration.md Phase 3 for the
+# conformance-risk discussion). `sentinel-guardrail`/`-fallback` are
+# unchanged — out of scope per ADR-023 (Phase 5, separate approval).
 
 model_list:
   - model_name: sentinel-router
@@ -15,7 +25,9 @@ model_list:
       fallbacks: ["sentinel-router-fallback"]
   - model_name: sentinel-router-fallback
     litellm_params:
-      model: anthropic/claude-3-5-haiku-20241022
+      model: ollama_chat/llama3.1:8b-instruct-q4_K_M
+      api_base: os.environ/OLLAMA_BASE_URL
+      format: json
 
   - model_name: sentinel-grader
     litellm_params:
@@ -23,7 +35,9 @@ model_list:
       fallbacks: ["sentinel-grader-fallback"]
   - model_name: sentinel-grader-fallback
     litellm_params:
-      model: anthropic/claude-3-5-haiku-20241022
+      model: ollama_chat/llama3.1:8b-instruct-q4_K_M
+      api_base: os.environ/OLLAMA_BASE_URL
+      format: json
 
   - model_name: sentinel-diagnose
     litellm_params:
@@ -31,7 +45,9 @@ model_list:
       fallbacks: ["sentinel-diagnose-fallback"]
   - model_name: sentinel-diagnose-fallback
     litellm_params:
-      model: anthropic/claude-3-5-sonnet-20241022
+      model: ollama_chat/mistral-small:24b-instruct-2501-q4_K_M
+      api_base: os.environ/OLLAMA_BASE_URL
+      format: json
 
   - model_name: sentinel-propose-action
     litellm_params:
@@ -39,7 +55,9 @@ model_list:
       fallbacks: ["sentinel-propose-action-fallback"]
   - model_name: sentinel-propose-action-fallback
     litellm_params:
-      model: anthropic/claude-3-5-sonnet-20241022
+      model: ollama_chat/mistral-small:24b-instruct-2501-q4_K_M
+      api_base: os.environ/OLLAMA_BASE_URL
+      format: json
 
   - model_name: sentinel-postmortem
     litellm_params:
@@ -47,7 +65,9 @@ model_list:
       fallbacks: ["sentinel-postmortem-fallback"]
   - model_name: sentinel-postmortem-fallback
     litellm_params:
-      model: anthropic/claude-3-5-haiku-20241022
+      model: ollama_chat/llama3.1:8b-instruct-q4_K_M
+      api_base: os.environ/OLLAMA_BASE_URL
+      format: json
 
   - model_name: sentinel-judge
     litellm_params:
@@ -55,7 +75,9 @@ model_list:
       fallbacks: ["sentinel-judge-fallback"]
   - model_name: sentinel-judge-fallback
     litellm_params:
-      model: anthropic/claude-3-5-sonnet-20241022
+      model: ollama_chat/mistral-small:24b-instruct-2501-q4_K_M
+      api_base: os.environ/OLLAMA_BASE_URL
+      format: json
 
   - model_name: sentinel-embedding
     litellm_params:
@@ -63,7 +85,8 @@ model_list:
       fallbacks: ["sentinel-embedding-fallback"]
   - model_name: sentinel-embedding-fallback
     litellm_params:
-      model: cohere/embed-english-v3.0
+      model: ollama/bge-m3
+      api_base: os.environ/OLLAMA_BASE_URL
 
   - model_name: sentinel-guardrail
     litellm_params:

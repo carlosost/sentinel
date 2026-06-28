@@ -696,7 +696,113 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   `make -n` to confirm the exact commands they'd issue, and `make build` was run
   far enough to confirm it fails for the expected reason (`docker-compose: No such
   file or directory` — no Docker in this sandbox), not from a Makefile defect.
+  *(Correction, Feature 15: the "compose file parses as valid YAML" claim above
+  was wrong — the `${VAR:?message}` credential checks contained an unquoted `: `
+  inside each error message, which `yaml.safe_load` actually rejects with
+  `ScannerError: mapping values are not allowed here`. Fixed during Feature 15's
+  Phase 1 by quoting all four `${VAR:?...}` values; re-verified with
+  `yaml.safe_load`. Whatever check produced this ADR's original claim either used
+  a more lenient loader or wasn't re-run after the credential lines were added —
+  flagged here rather than silently amended.)*
 - **Status:** Accepted.
+
+### ADR-023: Replace paid Anthropic/Cohere fallback models with local Ollama-served open-weights models (new)
+- **Context:** `infra/litellm_config.yaml`'s fallback tier for six chat aliases is
+  backed by `anthropic/claude-3-5-haiku-20241022` / `claude-3-5-sonnet-20241022`, and
+  `sentinel-embedding-fallback` by `cohere/embed-english-v3.0` — two paid-API
+  dependencies that exist purely as failover, never as primaries. `MIGRATION_PLAN.md`
+  (full plan, ground truth for this ADR) proposes replacing both with locally-served
+  open-weights models via Ollama, reachable from the `litellm` container by Docker
+  service DNS. The plan's own Scope Note corrects two assumptions a naive reading of
+  the request would have made: (1) TogetherAI is `sentinel-guardrail`'s *primary*
+  (Llama Guard 3-8B, ADR-019), not a fallback — swapping it is a different risk class
+  and is carried as an out-of-scope Phase 5, separate approval required; (2)
+  LangChain's `.with_fallbacks()` is incompatible with ADR-003/ADR-006 (nodes never
+  hold a raw model object to call it on) — the actually-native mechanism is extending
+  LiteLLM's own `fallbacks:` list per alias (ADR-018's existing pattern), not a second
+  failover mechanism.
+- **Decision:**
+  - **Runtime:** Ollama (not vLLM) — single container, OpenAI-compatible endpoints,
+    native GGUF quantization, smallest footprint satisfying "local inference, zero new
+    app servers." vLLM is named as an explicit fallback-of-the-fallback-plan (Phase 1.7)
+    if shadow-rollout load testing shows Ollama's serial request queue can't keep up.
+  - **Models:** Tier-1 (replaces haiku slots: `router`, `grader`, `postmortem`) →
+    `llama3.1:8b-instruct-q4_K_M`. Tier-2 (replaces sonnet slots: `diagnose`,
+    `propose-action`, `judge`) → `mistral-small:24b-instruct-2501-q4_K_M`, with
+    `phi-3-medium-4k-instruct-q4_K_M` as a documented downgrade path if the deployment
+    target can't clear ~16 GB free RAM/VRAM. Embedding fallback → `bge-m3`.
+  - **Scope (Phases 1–4, this ADR):** `infra/docker-compose.yml` (new `ollama` service),
+    `infra/litellm_config.yaml` (six chat `*-fallback` entries + the embedding fallback
+    repointed at `ollama_chat/`/`ollama/` provider strings with `format: json` set on
+    every chat entry), `scripts/pull_local_models.sh` + `make pull-local-models`,
+    `infra/.env(.example)` (retire `ANTHROPIC_API_KEY`/`COHERE_API_KEY` as commented-out,
+    dated, not silently deleted), `scripts/check_env.sh` (drop both from
+    `REQUIRED_VARS`). **Zero changes to `src/graph/nodes/*.py` or
+    `src/gateway/client_factory.py`** — every node already calls models through an
+    alias name only (ADR-003), confirmed diff-free by Phase 3's audit.
+  - **Out of scope (this ADR):** localizing `sentinel-guardrail`'s primary
+    (TogetherAI-served Llama Guard 3-8B) — tracked as a separate, future Phase 5 plan
+    requiring its own approval and its own shadow rollout against
+    `evals/guardrail_redteam.jsonl` (Feature 13's precision/recall scorer).
+  - **Rollout discipline:** cutover is gated behind a shadow-verification period
+    (Phase 4) — the local fallback runs as a third-priority, trace-tagged shadow call
+    behind both the live primary and the still-live paid fallback, compared in
+    LangSmith on JSON-validity rate, schema-match rate, semantic agreement (re-using
+    `sentinel_remediation_judge`, ADR-005, rather than inventing a new judge), and
+    latency. Paid keys are revoked at the provider dashboards (not just removed from
+    `.env`) only after a promotion gate passes — mirroring ADR-020's
+    `PROMOTION_MARGIN` gating pattern rather than inventing a new philosophy.
+  - **Known unresolved risk, logged not silently absorbed:** `bge-m3` (1024-dim) and
+    `text-embedding-3-small` (1536-dim) do not share an embedding dimension. If
+    `sentinel-embedding` ever actually fails over to the local fallback against an
+    index built for 1536-dim vectors, that is a hard failure, not graceful
+    degradation. Phase 3 surfaces this explicitly; resolving it (separate index per
+    embedding dimension, vs. a fallback that only alerts rather than serving degraded
+    retrieval) is required before Phase 2 of the migration is considered complete —
+    tracked as a new Open Question below, not resolved by this ADR itself.
+- **Consequences:** Removes two paid-API dependencies from the fallback path entirely
+  once cutover completes; the gateway contract (ADR-003/006/018) needs no amendment —
+  this is the first multi-phase change in the project that is provably contained to
+  `infra/`+`scripts/`+env, with `src/` untouched, a direct consequence of ADR-003's
+  original design intent finally paying off. Introduces a temporary, explicitly
+  feature-flagged (`SHADOW_FALLBACK_ENABLED`) addition to `client_factory`'s trace
+  metadata during Phase 4 only, to be reverted at cutover (Phase 4.5) — tracked here so
+  it is never mistaken for a permanent capability.
+- **Status:** Accepted. **Done** — Phases 1–4.5 complete; the user confirmed
+  2026-06-28 that the Anthropic and Cohere API keys have been revoked at their
+  provider dashboards (a manual, real-world action this sandbox could not
+  perform itself, so it is recorded here on the user's attestation rather than
+  independently verified). The Phase 4.2 shadow-fallback instrumentation
+  (`SHADOW_FALLBACK_ENABLED`/`shadow_alias_for`/`shadow_metadata`/
+  `fire_shadow_chat_call`) has been reverted from `client_factory.py` per its
+  own "temporary, reverted at cutover" design — see
+  `/memory/features/feature-15-local-fallback-migration.md` and roadmap item 15
+  (§9) for full phase-by-phase history.
+
+  **Accepted risk, documented not glossed over:** Open Question #17's
+  promotion-gate threshold was never given a real, data-backed number — Phase
+  2's direct cutover made the originally-planned staged gate moot before
+  Phase 4 could apply it (see the correction below), so this migration shipped
+  without ever empirically validating local-fallback quality against a
+  threshold. This is a known gap, not a silent omission; if local-fallback
+  quality regressions surface in production, this is the first place to look.
+
+  **Corrected 2026-06-28 (Feature 15, Phase 4) — the "Rollout discipline" bullet
+  above is no longer accurate and is corrected here, not silently rewritten.** It
+  describes the local fallback running as a third-priority shadow call "behind both
+  the live primary and the still-live paid fallback." That staged 3-tier rollout
+  (`MIGRATION_PLAN.md` §4.1) was never actually executed: Phase 2 directly
+  overwrote the `*-fallback` aliases' `model:` strings with the local Ollama models
+  (no `-fallback-local` third tier was added), so there was no live paid fallback
+  left by the time Phase 4 began. The user chose, via explicit decision (not
+  assumed), to treat Phase 4 as **retroactive validation**: `fire_shadow_chat_call`
+  (`src/gateway/client_factory.py`, Phase 4.2, feature-flagged via
+  `SHADOW_FALLBACK_ENABLED`) shadows a primary alias's already-local `-fallback`
+  against that same call's PRIMARY response — judged by `sentinel_remediation_judge`
+  — rather than against a paid baseline that no longer exists. Open Question #17
+  carries the full corrected reasoning. Paid keys (`ANTHROPIC_API_KEY`/
+  `COHERE_API_KEY`) are already non-required as of Phase 2; revoking them at the
+  provider dashboards (Phase 4.5) is now cleanup, not a gated cutover decision.
 
 ---
 
@@ -871,6 +977,25 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   trace_id-tagged cost/usage logging. Project Charter success criterion 4 is now
   end-to-end verifiable. See
   `/memory/features/feature-12-litellm-proxy-hardening.md`.
+- **Implementation status (Feature 15, Done):** per ADR-023, the six chat
+  `*-fallback` aliases and `sentinel-embedding-fallback` are repointed from paid
+  Anthropic/Cohere models to locally-served Ollama open-weights models
+  (`llama3.1:8b-instruct`, `mistral-small:24b-instruct`, `bge-m3`) — done as of
+  Phase 2. `EmbeddingDimensionMismatchError` (Phase 3) makes the embedding
+  -fallback's dimension mismatch a named, hard-failing contract instead of an
+  accidental generic error. Phase 4's `fire_shadow_chat_call` retroactively
+  validated the cutover by shadowing a primary alias's local fallback against
+  that same call's primary response — corrected from the originally-planned
+  "shadow behind a still-live paid fallback," which never existed by the time
+  Phase 4 ran (see ADR-023's dated correction) — and has since been **reverted**
+  from `src/gateway/client_factory.py` at Phase 4.5 cutover, per its own
+  temporary-by-design scope. Phase 4.5 closed out 2026-06-28: the Anthropic and
+  Cohere keys are confirmed revoked at the provider dashboards (user
+  attestation), and Open Question #17's promotion-gate threshold is closed as
+  moot rather than empirically resolved — an accepted, documented gap, not a
+  silently dropped TODO. `sentinel-guardrail`'s TogetherAI-served primary is
+  explicitly out of scope (Phase 5, separate approval). See
+  `/memory/features/feature-15-local-fallback-migration.md` and `MIGRATION_PLAN.md`.
 
 ### Pillar 6 — Fine-Tuning Integration
 - **What gets fine-tuned:** A small embedding/retrieval model
@@ -1003,6 +1128,7 @@ guardrail_output -(safe, post-execution)-> END
 | `feature-12-litellm-proxy-hardening` | LiteLLM proxy production config: fallback chains, semantic caching with eval carve-out, per-key rate limits, trace_id-tagged cost logging. 152/152 tests passing (141 carried over from Feature 11 + 11 new: 5 in `test_litellm_production_config.py`, 3 in `test_litellm_config_yaml.py`, 3 in `test_tracing.py`; `test_gateway_compliance.py`'s one existing assertion updated in place, no count change). Lint PASS, eval harness PASS. | Phase 4 | **Done** | ADR-018, ADR-021 addendum (new), §5.3, §3 Pillar 5, §3 Pillar 4, §7 (Open Question #12, already pre-flagged), §9 item 12 |
 | `feature-13-guardrail-unstubbing` | Real Llama Guard 3-8B inference replaces the `guardrail_check()` stub; formalizes `GuardrailVerdict` shape (`verdict`/`reason`/`category`); adds `evals/guardrail_redteam.jsonl` + `src/evals/guardrail_dataset.py`/`guardrail_eval.py` precision/recall scorer wired into `scripts/run_eval.py`; corrects ADR-004's pillar reference and §8.3's `borderline` mention; updated 3 existing graph integration tests to also mock `guardrail_output.guardrail_check` (previously relied on the old stub's hardcoded "safe"). 168/168 tests passing (up from 152). Lint PASS, eval harness PASS. | Phase 4 | **Done** | ADR-019 (new, retrofit), §5.1, §8.3, §3 Pillar 3, §3 Pillar 4, §7 (resolves Open Question #1, Open Question #13 already pre-flagged), §9 item 13 |
 | `feature-14-finetuning-pipeline` | Fine-tuning export/train/A-B-promote pipeline for the embedding model (`src/finetuning/{export_pairs,langsmith_spans,ab_eval}.py`, `src/embeddings/finetuned_embeddings.py`, `scripts/{export_finetune_pairs,finetune_embedding_model,ab_eval_embedding_model}.py`); `retriever` node gains the `EMBEDDING_MODEL_VARIANT=base|finetuned` config-flag branch, confirming the local/non-gateway model precedent a third time (after ADR-011/ADR-016); corrects Pillar 6's data-source prose to retriever/reranker spans; resolves Open Question #5. 190/190 tests passing (up from 168). Lint PASS, eval harness unaffected/PASS. | Phase 4 | **Done** | ADR-020 (new, retrofit), §3 Pillar 6, §3 Pillar 1, §7 (resolves Open Question #5, Open Question #14 already pre-flagged), §9 item 14 |
+| `feature-15-local-fallback-migration` | Replace paid Anthropic/Cohere fallback models with locally-served Ollama open-weights models per `MIGRATION_PLAN.md`: new `ollama` service in `infra/docker-compose.yml`, `infra/litellm_config.yaml` fallback entries repointed at `ollama_chat/`/`ollama/` provider strings with `format: json`, `scripts/pull_local_models.sh` + `make pull-local-models`, `infra/.env(.example)`/`scripts/check_env.sh` retire the two paid credentials (commented out, dated, not deleted, now confirmed dead post-revocation); zero changes to `src/graph/nodes/*.py` (confirmed by Phase 3's audit — every node was already provider-agnostic per ADR-003); `src/gateway/client_factory.py` did gain a temporary Phase 4.2 shadow-instrumentation addition, since reverted at Phase 4.5, netting back to zero net change; guardrail's TogetherAI primary explicitly out of scope (Phase 5). Phase 4's shadow rollout was retroactive validation, not a true pre-cutover gate (Phase 2 already cut over directly) — documented as an accepted risk, not silently glossed over. Anthropic/Cohere keys confirmed revoked at the provider dashboards 2026-06-28 (user attestation). | Phase 4 (post-roadmap) | **Done** | ADR-023 (new), §3 Pillar 5, §7 (new Open Questions #16, #17, both resolved), §9 item 15 |
 
 ---
 
@@ -1138,6 +1264,85 @@ guardrail_output -(safe, post-execution)-> END
     pending for Feature 09: `interrupt()`/durable checkpointing). Never run against
     real `langgraph`'s own cycle/recursion-limit behavior, and that must be verified,
     not assumed, in the same future retrofit pass.
+16. **Embedding-dimension mismatch between the primary and local fallback embedding
+    model:** ADR-023's `sentinel-embedding-fallback` (`bge-m3`, 1024-dim) does not
+    share a dimension with the primary (`text-embedding-3-small`, 1536-dim). If the
+    embedding alias ever actually fails over, that is a hard failure against any
+    index built for 1536-dim vectors, not graceful degradation. `MIGRATION_PLAN.md`
+    Phase 3 surfaces this explicitly and requires an explicit answer (separate index
+    per embedding dimension, or a fallback that only alerts rather than serving
+    degraded retrieval) before Phase 2 of the migration is considered complete — not
+    resolved yet, tracked here so it cannot be silently papered over mid-implementation.
+
+    **Resolved 2026-06-28 (ADR-023, Feature 15, Phase 3) — Option B chosen, Option A
+    explicitly rejected for v1.** Decision: the embedding fallback must fail loudly,
+    never serve degraded retrieval. Concretely: `scripts/ingest_corpora.py` always
+    calls the primary alias (`embedding_model="sentinel-embedding"`, never
+    `-fallback`), so every corpus row is embedded at 1536-dim; if the proxy ever
+    transparently fails the query-side embedding call over to `bge-m3`,
+    `src/retrieval/vector_search.py`'s `cosine_similarity`/`search` now raise a
+    purpose-named `EmbeddingDimensionMismatchError(ValueError)` (previously a generic,
+    indistinguishable `ValueError`) instead of crashing on an unrelated-looking
+    message or — worse — silently truncating/padding a vector into a wrong-shape
+    comparison. The `retriever` node (`src/graph/nodes/retriever.py`) does not catch
+    this exception; it propagates, surfacing as a visible node failure, not a quietly
+    degraded answer. A per-dimension index (Option A: maintain a second index keyed
+    by embedding model) was considered and rejected for v1 — it would require schema
+    changes to `document_store.py`/`vector_search.py` disproportionate to the actual
+    risk, since `sentinel-embedding-fallback` only fires during a full OpenAI
+    -embeddings-endpoint outage (rare, total), not everyday traffic the chat-alias
+    fallbacks cover. Covered by new tests in `tests/retrieval/test_vector_search.py`
+    (Deterministic Tier — exercises the exception type directly) and
+    `tests/gateway/test_local_fallback_contract.py::test_embedding_fallback_returns_correct_dimensionality`
+    (Probabilistic Tier — exercises it against a real `bge-m3` call once a live
+    Ollama/LiteLLM stack exists). Revisit this decision only if `sentinel-embedding
+    -fallback`'s failure rate in production ever justifies the Option A cost — not
+    speculatively.
+17. **Local-fallback promotion threshold is a placeholder:** ADR-023's Phase 4
+    promotion gate (JSON-validity rate, judge-score parity vs. the paid fallback's
+    historical baseline) has no numeric threshold with empirical basis yet — same
+    pattern as Open Questions #8, #12, #13, and #14. Revisit once real shadow-rollout
+    data exists; do not invent a number to unblock cutover.
+
+    **Corrected 2026-06-28 (ADR-023, Feature 15, Phase 4) — premise changed, not just
+    the number.** `MIGRATION_PLAN.md` §4.4 worded this gate as "judge-score parity
+    vs. the paid fallback's historical baseline," assuming Phase 4 would run while
+    the paid (Anthropic/Cohere) fallback was still live, per §4.1's staged 3-tier
+    rollout. That staging never happened: Phase 2 directly overwrote the `*-fallback`
+    aliases' `model:` strings with the local Ollama models (no `-fallback-local` third
+    tier was ever added — see ADR-023's dated correction below), so by the time Phase
+    4 was implemented there was no live paid baseline left to compare against. The
+    gate is reinterpreted accordingly, decided with the user via explicit choice
+    (not assumed): **comparison baseline is the PRIMARY model's output, not the
+    paid fallback's** — `fire_shadow_chat_call` (Phase 4.2,
+    `src/gateway/client_factory.py`) shadows a primary-tier alias's already-local
+    `-fallback` against that same call's primary response, scored by the existing
+    `sentinel_remediation_judge` (ADR-005). This validates the Phase 2 cutover
+    retroactively rather than gating a cutover that already happened. The numeric
+    threshold itself remains unresolved — still no empirical basis, still not
+    invented here — but the metric it will be measured against is now correctly
+    specified, which it was not before this correction. Revisit with a real number
+    once shadow-call data exists from a real Ollama/LiteLLM stack (this sandbox has
+    none, per ADR-021); `fire_shadow_chat_call`'s own logic (flag-gating, alias
+    selection, metadata shape, exception-swallowing) is unit-tested today in
+    `tests/gateway/test_shadow_fallback.py` without requiring that real data.
+
+    **Resolved by ADR-023, 2026-06-28 (Feature 15, Phase 4.5) — closed as moot,
+    not answered with a number.** The user confirmed the Anthropic/Cohere keys
+    are now revoked at the provider dashboards, making the Phase 2 cutover
+    irreversible via this codebase. There was never a window in which a real
+    promotion gate could have blocked that cutover — Phase 2's direct overwrite
+    preceded Phase 4's gate logic entirely (see the correction above) — so no
+    amount of shadow data collected now could retroactively have gated a
+    decision already made. The numeric threshold itself was never derived and
+    never will be under this ADR; this is recorded as an accepted, documented
+    gap (see ADR-023's "Accepted risk" note), not a quietly-dropped TODO.
+    `fire_shadow_chat_call` and its supporting functions have been reverted
+    from `client_factory.py` (their own "temporary, reverted at cutover" design
+    working as intended) along with their 14 tests in
+    `tests/gateway/test_shadow_fallback.py` (deleted). If local-fallback
+    quality ever needs real measurement, it should be designed fresh against
+    actual production traffic, not resurrected from this placeholder.
 
 ---
 
@@ -1353,3 +1558,111 @@ Log (§6) linking to its `/memory/features/feature-N.md` detail file. Do not ski
 - [x] 13. Replace the `guardrail_check()` stub with real Llama Guard 3-8B inference behind the gateway, for both input and output moderation paths. **Done** — ADR-019; 168/168 tests pass via `python3 -m unittest discover -s tests`.
 
 - [x] 14. Build the fine-tuning pipeline: `scripts/export_finetune_pairs.py` exporting `grade_documents` LangSmith traces into contrastive JSONL pairs, a `sentence-transformers` fine-tune of `bge-small-en-v1.5`, and an A/B eval against the golden set before promoting it behind a config flag. **Done** — ADR-020 (corrected data source: retriever/reranker spans, not `grade_documents`); 190/190 tests pass via `python3 -m unittest discover -s tests`.
+
+- [x] 15. Migrate Anthropic/Cohere fallback aliases off paid APIs onto local Ollama-served open-weights models (ADR-023). **Done** (2026-06-28) — see `/memory/features/feature-15-local-fallback-migration.md`.
+
+---
+
+## 10. Project Retrospective
+
+This section was promised by `README.md` (which has cited it as "§10" since the
+README rewrite during Phase 4 wrap-up) but never actually written until now — a real
+gap between a stated deliverable and the living memory asset, caught while promoting
+the local-fallback migration plan (ADR-023) and fixed here rather than left
+inconsistent, per this document's own "never silently lose/skip a documented
+deliverable" convention.
+
+### 10.1 What shipped
+
+All 14 Phase 4 roadmap items (§9) are **Done**: a full `entry → guardrail_input →
+router → retriever → reranker → grade_documents` (self-RAG cycle) `→ diagnose →
+propose_action → guardrail_output → await_human_approval [interrupt] → execute →
+write_postmortem → guardrail_output → END` graph, all six Production RAG Blueprint
+pillars implemented per their respective ADRs (query routing/re-ranking/self-RAG —
+Pillar 1; HITL interrupt/resume on Postgres-backed durable state — Pillar 2; real
+Llama Guard 3-8B moderation at every entry/exit — Pillar 3; a golden eval set +
+LLM-as-judge + ragas + a guardrail red-team precision/recall scorer — Pillar 4; a
+production-configured LiteLLM gateway with fallback/caching/rate-limits/trace
+propagation — Pillar 5; an embedding fine-tuning export/train/A-B-promote pipeline —
+Pillar 6), 190/190 tests passing, lint and eval-harness mechanics green.
+
+### 10.2 What the Spec-Driven/BDD/TDD loop actually caught
+
+The loop (§8.1) was not just process theater — it surfaced four real drafting defects
+before they shipped silently as bugs, each corrected as a retrofit ADR rather than a
+quiet edit:
+- **ADR-005** caught that the original eval strategy ("LLM judges remediation
+  quality") had no ground truth — an untestable eval masquerading as a pillar.
+- **ADR-009 / Open Question #6 / ADR-014** caught that `guardrail_output`'s
+  rejection branch was never wired at either call site, a gap the Conflict Check step
+  is specifically designed to surface before implementation, not after.
+- **ADR-019** caught two stale cross-references (ADR-004 pointing at the wrong
+  Pillar; §8.3's unimplemented `borderline` guardrail verdict) that had sat
+  unnoticed since Phase 1/2 drafting.
+- **ADR-020** caught that Pillar 6's fine-tuning data source (`grade_documents`'
+  per-document relevance grade) didn't actually exist — ADR-012 only ever defined an
+  aggregate grade for the whole batch — and corrected the pipeline to export from
+  retriever/reranker spans instead.
+
+None of these were caught by a human re-reading prose for correctness; all four were
+caught by the Conflict Check step explicitly cross-referencing every new feature
+against every existing ADR before writing code — exactly the mechanism Phase 2's
+Workflow Blueprint was designed to provide.
+
+### 10.3 The single largest structural risk: ADR-021
+
+Every feature in this project was implemented against stdlib stand-ins for
+`langgraph`, `langchain-openai`, `pydantic`, and `pytest` (ADR-021), because this
+sandbox has never had PyPI/Docker egress. This is the project's biggest open risk,
+not a footnote: 190/190 "passing tests" describes behavior against hand-written
+shims whose fidelity to the real packages has never once been verified — not
+`_compat.py`'s cycle/interrupt semantics, not `MockLiteLLMProxy`'s fallback/caching
+behavior, not the `langsmith` trace-span shims the fine-tuning export script depends
+on. Open Question #15 names this directly and must be the first thing resolved
+outside this sandbox, before any of the other 14 "Done" features are trusted as
+production-ready rather than design-complete-and-shim-verified.
+
+### 10.4 Numeric placeholders still owed empirical grounding
+
+Four separate thresholds were deliberately shipped as documented placeholders
+rather than invented numbers dressed up as decisions: the self-RAG relevance cutoff
+(`< 0.6`, Open Question #8), the LiteLLM virtual-key rate-limit/budget caps (Open
+Question #12), the guardrail moderation precision/recall pass/fail thresholds (Open
+Question #13), and the fine-tuning promotion margin (`PROMOTION_MARGIN = 0.05`, Open
+Question #14). All four follow the same pattern: the *mechanism* is real and tested,
+the *number* is provisional pending real usage/eval data. Treat any of these as load
+-bearing in a real deployment only after they've been tuned against real traffic, not
+on the strength of having been written down.
+
+### 10.5 The local-fallback migration (ADR-023)
+
+*Originally written as forward-looking, before Feature 15 began; left in place below
+as the historical record of what was planned, with a closing note appended rather
+than silently rewritten now that the work is done.*
+
+The next tracked piece of work is replacing the Anthropic/Cohere paid fallback
+aliases in `infra/litellm_config.yaml` with locally-served open-weights models via
+Ollama (ADR-023, full plan in `MIGRATION_PLAN.md`, roadmap item 15). Notably, this is
+the first piece of work in the project that is explicitly *not* blocked by ADR-021's
+sandbox constraint in the same way the original 14 features were — it is pure
+infra/config work (`litellm_config.yaml`, `docker-compose.yml`, `check_env.sh`), with
+zero changes to `src/`, and was deliberately scoped that way specifically so it
+doesn't inherit Open Question #15's verification debt. It does, however, introduce
+its own new open item (the `bge-m3`/`text-embedding-3-small` embedding-dimension
+mismatch, §7) that must be resolved explicitly, not silently papered over, before
+Phase 2 of that migration ships.
+
+**Closed out 2026-06-28 (Feature 15, Phase 4.5).** The migration is Done — see
+ADR-023, the Pillar 5 implementation-status bullet, and
+`/memory/features/feature-15-local-fallback-migration.md` for the full account. Two
+things did not go exactly as planned above, both surfaced explicitly rather than
+quietly absorbed: the "zero changes to `src/`" claim held only through Phase 3 —
+Phase 4 added temporary shadow instrumentation to `client_factory.py`, since reverted
+at cutover, netting back to zero; and the originally-envisioned staged 3-tier
+rollout (paid fallback still live behind a new local third tier, to enable a true
+pre-cutover gate) never happened, because Phase 2's direct alias overwrite already
+foreclosed it. The embedding-dimension mismatch this section flagged was resolved in
+Phase 3 (Open Question #16, Option B — fail loudly). The promotion-gate threshold
+this section implicitly assumed Phase 4 would derive was never given a real number
+and never will be under this ADR (Open Question #17, closed as moot) — an accepted,
+documented gap, not a silently dropped commitment.
