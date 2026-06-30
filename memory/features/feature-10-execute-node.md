@@ -215,5 +215,5 @@ def test_execute_never_calls_gateway(mock_client_factory):
 - [x] Existing integration tests (`test_skeleton.py`,
       `test_hitl_checkpoint_restart.py`) updated to mock the new dependency
       and pass.
-- [x] `PROJECT_MEMORY.md` updated (Feature Log, ADR-016, ADR-021 addendum,
+- [x] `docs/PROJECT_MEMORY.md` updated (Feature Log, ADR-016, ADR-021 addendum,
       §7 Open Question #3, §3 Pillar 2, §9 checkbox).

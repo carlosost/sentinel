@@ -8,7 +8,7 @@ evaluator-registration surface, scoped to exactly what ADR-008 needs: register
 a named evaluator function and list/retrieve registered evaluators.
 
 Swap for the real `langsmith.Client()` once real package access exists; see
-Open Question #15 (PROJECT_MEMORY.md §7), which now also covers this file.
+Open Question #15 (docs/PROJECT_MEMORY.md §7), which now also covers this file.
 """
 
 from __future__ import annotations

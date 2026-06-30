@@ -164,7 +164,7 @@ specify exact mock-arg shapes; tests assert section-header substring presence
 (`assertIn`) per §8.2's narrative-quality-is-Probabilistic-Tier discipline, never
 `==` against full draft text.
 
-**New Open Question added to PROJECT_MEMORY.md §7** (per this feature's own Blast
+**New Open Question added to docs/PROJECT_MEMORY.md §7** (per this feature's own Blast
 Radius note, not resolved here): no retry cap exists on `execute -(failure)->
 diagnose`, unlike the self-RAG loop's bounded `retry_count < 2` (ADR-012).
 
@@ -182,5 +182,5 @@ diagnose`, unlike the self-RAG loop's bounded `retry_count < 2` (ADR-012).
 - [x] `build.py` wired: real node, real edge, placeholder removed.
 - [x] Full test suite green, lint green, eval harness green.
 - [x] New Open Question flagged in PMA (not solved, not deleted-then-forgotten).
-- [x] PROJECT_MEMORY.md Feature Log row, ADR-017 status, §3 Pillar 3, §9 checkbox
+- [x] docs/PROJECT_MEMORY.md Feature Log row, ADR-017 status, §3 Pillar 3, §9 checkbox
   updated.

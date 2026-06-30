@@ -260,7 +260,7 @@ Feature 11/12/13 pattern.
       Tier, gated on Open Question #15).
 - [x] Lint green; eval harness unaffected and still green.
 - [x] Feature file Status → Done, this section appended.
-- [x] PROJECT_MEMORY.md updated (ADR-020 implementation-status bullet, Feature Log
+- [x] docs/PROJECT_MEMORY.md updated (ADR-020 implementation-status bullet, Feature Log
       row, §9 checkbox). Pillar 6/Pillar 1's "Implementation status (Feature 14)"
       bullets and Open Question #5's resolution marker were already pre-drafted
       accurately and required no further correction.

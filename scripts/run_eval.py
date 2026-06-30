@@ -3,7 +3,7 @@
 
 CI separation: this is deliberately not run via pytest/unittest — it is the
 Probabilistic Tier eval job, reported separately from the Deterministic Tier
-test suite (PROJECT_MEMORY.md §8.2). Today it can only validate the harness's
+test suite (docs/PROJECT_MEMORY.md §8.2). Today it can only validate the harness's
 own mechanics (dataset schema, prompt rendering, evaluator registration)
 because no graph node produces real diagnoses/actions yet (roadmap items
 4-11) — see Feature 02's "Pillar Impact" caveat in

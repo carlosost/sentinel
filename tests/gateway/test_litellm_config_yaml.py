@@ -12,7 +12,7 @@ original src/*.py-only scan missed scripts/entrypoint.sh's smoke-check
 heredoc, which referenced a `sentinel-chat` alias that was never declared in
 litellm_config.yaml's model_list — a real, previously-undetected gap. See
 memory/features/feature-12-litellm-proxy-hardening.md's dated note and
-LITELLM_USAGE_REVIEW.md for the full story."""
+docs/LITELLM_USAGE_REVIEW.md for the full story."""
 
 import re
 import unittest
@@ -79,6 +79,37 @@ class LiteLLMConfigYamlTests(unittest.TestCase):
     def test_semantic_caching_is_enabled(self):
         self.assertTrue(self.raw["litellm_settings"]["cache"])
         self.assertEqual(self.raw["litellm_settings"]["cache_params"]["type"], "redis")
+
+    def test_every_openai_served_chat_alias_enforces_json_response_format(self):
+        """docs/LLM_AGNOSTICISM_REVIEW.md §1.3 Gap A: the Ollama-served fallback tier
+        gets a structural JSON guarantee (`format: json`, Ollama's
+        grammar-constrained mode); the OpenAI-served primaries — the path that
+        carries production traffic — had no equivalent and relied on prompt
+        text alone. A chat alias is in scope here if its primary `model` is
+        `openai/*` and it is not an embedding model (`openai/text-embedding-*`
+        has no `response_format` concept). For every such alias,
+        `litellm_params.response_format` must be `{"type": "json_object"}` —
+        LiteLLM passes this straight through to OpenAI's JSON mode, so the
+        contract is enforced by configuration, not just convention. Excludes
+        `openai/text-embedding-*` (embeddings) and `openai/omni-moderation-*`
+        (OpenAI's separate /moderations endpoint, served via
+        `sentinel-guardrail-fallback` — found by an earlier run of this very
+        test: it isn't a /chat/completions model and `response_format` isn't
+        a concept there at all, so asserting it would be wrong, not just
+        unnecessary)."""
+        _NON_CHAT_PREFIXES = ("openai/text-embedding", "openai/omni-moderation")
+        for entry in self.raw["model_list"]:
+            params = entry["litellm_params"]
+            model = params.get("model", "")
+            if not model.startswith("openai/") or model.startswith(_NON_CHAT_PREFIXES):
+                continue
+            self.assertEqual(
+                params.get("response_format"),
+                {"type": "json_object"},
+                f"{entry['model_name']!r} is served by {model!r} (OpenAI) but does not "
+                "pin response_format=json_object — JSON-output reliability for this "
+                "alias currently depends on prompt text alone",
+            )
 
 
 if __name__ == "__main__":

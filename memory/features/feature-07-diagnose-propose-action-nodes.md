@@ -221,7 +221,7 @@ def test_propose_action_uses_client_factory(mock_client_factory):
 
 ### Definition of Done
 
-- [x] ADR-013 (pre-drafted in PROJECT_MEMORY.md) re-verified against the
+- [x] ADR-013 (pre-drafted in docs/PROJECT_MEMORY.md) re-verified against the
       actual Feature 04-06 codebase and confirmed accurate — implemented as
       specified, with one additive trust-boundary decision documented.
 - [x] Tool registry implemented with at least one read-only tool.
@@ -232,6 +232,6 @@ def test_propose_action_uses_client_factory(mock_client_factory):
 - [x] All Gherkin scenarios covered by passing tests, plus additional edge
       cases.
 - [x] Full test suite, lint, and eval harness all pass.
-- [x] `PROJECT_MEMORY.md` updated (Feature Log, §9 item 7; ADR-013 and the
+- [x] `docs/PROJECT_MEMORY.md` updated (Feature Log, §9 item 7; ADR-013 and the
       Pillar 1/2/4 "Implementation status (Feature 07)" notes were already
       pre-drafted and required no correction).

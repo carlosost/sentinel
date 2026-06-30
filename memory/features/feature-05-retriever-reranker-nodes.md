@@ -95,7 +95,7 @@ the query source, so nothing above is invalidated by this.
 ### Definition of Done checklist
 - [x] Gherkin scenarios from this spec have corresponding passing tests (corpus filter, top-k=20 cap, gateway-routed embedding call; top-5 descending rerank, score overwrite, gateway-isolation).
 - [x] Deterministic Tier fully mocked, no live infra/API keys.
-- [x] PROJECT_MEMORY.md updated (Feature Log, ADR-021 addendum, §9 checkbox).
+- [x] docs/PROJECT_MEMORY.md updated (Feature Log, ADR-021 addendum, §9 checkbox).
 - [ ] Probabilistic Tier (ragas `context_precision`/`context_recall` baseline) — not yet applicable; needs `diagnose`/`propose_action` (Feature 07) before `make eval` has a full pipeline to score.
 - [ ] Real-package parity (Open Question #15: real pgvector query, real `sentence-transformers` cross-encoder) — not yet verified; tracked, not blocking.
 

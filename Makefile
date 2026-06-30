@@ -2,7 +2,7 @@
 #  Sentinel — Autonomous SRE Incident Copilot — Developer Makefile
 #
 #  Status note: there is no long-running app/API container yet (Open Question
-#  #10, PROJECT_MEMORY.md §7) — that lands around roadmap items 9-10. Until
+#  #10, docs/PROJECT_MEMORY.md §7) — that lands around roadmap items 9-10. Until
 #  then, `app` is a one-shot container: `make smoke`/`make test`/`make shell`
 #  each run it fresh via `docker compose run --rm`, not `docker exec` into an
 #  already-running process.

@@ -208,6 +208,6 @@ Definition of Done — checked against §8.5:
 - [x] Spec (this file) exists and was conflict-checked against prior ADRs.
 - [x] Gherkin scenarios map 1:1 to implemented unittest cases.
 - [x] Tests pass deterministically, no live network/API keys required.
-- [x] PROJECT_MEMORY.md and this file updated in the same pass as the code.
+- [x] docs/PROJECT_MEMORY.md and this file updated in the same pass as the code.
 - [ ] Real-package parity (Open Question #15, now also covering `_compat.py`'s
       `add_conditional_edges`) — not yet verified against real `langgraph`.

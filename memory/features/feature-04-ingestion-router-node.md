@@ -210,7 +210,7 @@ its mocked-test path) behaves correctly when the real gateway isn't reachable.
 
 **Definition of Done checklist (§8.5):**
 - [x] 1. PMA sections updated in this same pass (ADR-021 addendum, Feature Log,
-      §9 item 4 — see PROJECT_MEMORY.md).
+      §9 item 4 — see docs/PROJECT_MEMORY.md).
 - [x] 2. Both Gherkin scenario pairs (ingestion tagging/idempotency, router
       single-route/gateway-compliance) pass in the Deterministic Tier.
 - [x] 3. New nodes (`router`) and the new ingestion module each have unit tests; no
@@ -223,7 +223,7 @@ its mocked-test path) behaves correctly when the real gateway isn't reachable.
 - [x] 5. No new LangSmith structural assertion surfaces beyond what Feature 01-03
       already established (gateway metadata, node order) — `router` follows the same
       `client_factory` call pattern those assertions already cover.
-- [x] 6. Feature Log row updated with PMA-sections-touched (see PROJECT_MEMORY.md §6).
+- [x] 6. Feature Log row updated with PMA-sections-touched (see docs/PROJECT_MEMORY.md §6).
 - [ ] **Real-package parity (Open Question #15) not yet verified** — `document_store.py`
       has never been run against real `psycopg2`/pgvector, same standing caveat as
       every other ADR-021 shim.

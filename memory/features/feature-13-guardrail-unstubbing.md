@@ -233,5 +233,5 @@ pattern — no new Open Question number was added.
       model once sandbox constraints lift).
 - [x] Lint and eval harness both green.
 - [x] Feature file Status → Done, this section appended.
-- [x] PROJECT_MEMORY.md updated (ADR-019 implementation-status bullet, Feature Log
+- [x] docs/PROJECT_MEMORY.md updated (ADR-019 implementation-status bullet, Feature Log
       row, §9 checkbox, Open Question #1 resolution marker, ADR-004/§8.3 corrections).
