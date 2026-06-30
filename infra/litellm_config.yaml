@@ -17,11 +17,22 @@
 # memory/features/feature-15-local-fallback-migration.md Phase 3 for the
 # conformance-risk discussion). `sentinel-guardrail`/`-fallback` are
 # unchanged — out of scope per ADR-023 (Phase 5, separate approval).
+#
+# docs/LLM_AGNOSTICISM_REVIEW.md §1.3/Item 1 (2026-06-28): the six OpenAI-served
+# chat primaries below now also set `response_format: {type: json_object}`
+# — the OpenAI-side structural equivalent of the Ollama fallbacks' `format:
+# json` above. Before this, the fallback tier had a config-level JSON
+# guarantee and the primary tier (the path carrying production traffic) did
+# not — it relied on prompt text alone. See
+# tests/gateway/test_litellm_config_yaml.py's
+# test_every_openai_served_chat_alias_enforces_json_response_format, which
+# now enforces this for any future OpenAI-served chat alias too.
 
 model_list:
   - model_name: sentinel-router
     litellm_params:
       model: openai/gpt-4o-mini
+      response_format: { type: json_object }
       fallbacks: ["sentinel-router-fallback"]
   - model_name: sentinel-router-fallback
     litellm_params:
@@ -32,6 +43,7 @@ model_list:
   - model_name: sentinel-grader
     litellm_params:
       model: openai/gpt-4o-mini
+      response_format: { type: json_object }
       fallbacks: ["sentinel-grader-fallback"]
   - model_name: sentinel-grader-fallback
     litellm_params:
@@ -42,6 +54,7 @@ model_list:
   - model_name: sentinel-diagnose
     litellm_params:
       model: openai/gpt-4o
+      response_format: { type: json_object }
       fallbacks: ["sentinel-diagnose-fallback"]
   - model_name: sentinel-diagnose-fallback
     litellm_params:
@@ -52,6 +65,7 @@ model_list:
   - model_name: sentinel-propose-action
     litellm_params:
       model: openai/gpt-4o
+      response_format: { type: json_object }
       fallbacks: ["sentinel-propose-action-fallback"]
   - model_name: sentinel-propose-action-fallback
     litellm_params:
@@ -62,6 +76,7 @@ model_list:
   - model_name: sentinel-postmortem
     litellm_params:
       model: openai/gpt-4o-mini
+      response_format: { type: json_object }
       fallbacks: ["sentinel-postmortem-fallback"]
   - model_name: sentinel-postmortem-fallback
     litellm_params:
@@ -72,6 +87,7 @@ model_list:
   - model_name: sentinel-judge
     litellm_params:
       model: openai/gpt-4o
+      response_format: { type: json_object }
       fallbacks: ["sentinel-judge-fallback"]
   - model_name: sentinel-judge-fallback
     litellm_params:
@@ -79,6 +95,14 @@ model_list:
       api_base: os.environ/OLLAMA_BASE_URL
       format: json
 
+  # docs/LLM_AGNOSTICISM_REVIEW.md §1.3/Item 5 (2026-06-28): swapping this alias's
+  # primary `model` is NOT a config-only change like the chat aliases above —
+  # the new model's embedding dimensionality must match what `corpora/` was
+  # ingested with, or every retriever call fails loudly with
+  # EmbeddingDimensionMismatchError (src/retrieval/vector_search.py,
+  # Open Question #16's deliberate fail-loud resolution). Re-run
+  # scripts/ingest_corpora.py against every corpus immediately after changing
+  # this entry's `model`, before any traffic uses the new alias.
   - model_name: sentinel-embedding
     litellm_params:
       model: openai/text-embedding-3-small
@@ -116,7 +140,7 @@ litellm_settings:
 # with an independent rate-limit/budget so a `make eval` run can never starve
 # application traffic of rate-limit headroom (and vice versa). Numeric caps
 # below are placeholders pending real usage data — tracked as Open Question
-# #12 in PROJECT_MEMORY.md §7, not asserted as "correct" by any test.
+# #12 in docs/PROJECT_MEMORY.md §7, not asserted as "correct" by any test.
 general_settings:
   virtual_keys:
     - key_alias: sentinel-app

@@ -4,7 +4,7 @@ Sentinel is a learning project for building a production-grade LLM application f
 scratch with LangGraph, LangSmith, LangChain, and Advanced RAG — built under a strict
 Spec-Driven Development → BDD → TDD workflow. **All 14 Phase 4 roadmap items are
 implemented and tested** (190/190 tests passing). See §10 (Project Retrospective) of
-`PROJECT_MEMORY.md` for the full wrap-up, including what the sandbox this was built in
+`docs/PROJECT_MEMORY.md` for the full wrap-up, including what the sandbox this was built in
 could and couldn't verify.
 
 ## What it does
@@ -42,7 +42,7 @@ execute -(failure)-> diagnose
 execute -(success)-> write_postmortem -> guardrail_output -> END
 ```
 
-The full node-by-node contract lives in `PROJECT_MEMORY.md` §5.2.
+The full node-by-node contract lives in `docs/PROJECT_MEMORY.md` §5.2.
 
 ## The six production pillars
 
@@ -105,17 +105,22 @@ infra/
   litellm_config.yaml           # model aliases, fallback chains, rate limits
 memory/
   features/                     # one detail file per implemented feature (ADRs, Gherkin, PyTest)
-PROJECT_MEMORY.md               # the living architecture record — read this first
+docs/
+  PROJECT_MEMORY.md             # the living architecture record — read this first
+  SWAPPING_MODELS.md            # runbook: swapping a model behind a sentinel-* alias
+  ...                            # MIGRATION_PLAN.md, USAGE.md, and other point-in-time artifacts
 ```
 
 ## Project memory
 
-`PROJECT_MEMORY.md` is this project's living architecture record: every Architecture
+`docs/PROJECT_MEMORY.md` is this project's living architecture record: every Architecture
 Decision Record, the Production RAG Blueprint, active state/graph/gateway contracts,
 the Development Workflow Blueprint, and the prioritized feature roadmap. It is never
 trimmed — superseded decisions are marked, not deleted — and it is the required
 starting context for any new feature or session. Per-feature detail (conflict checks,
 new ADRs, Gherkin, PyTest skeletons) lives in `memory/features/feature-NN-*.md`.
+General project documentation (runbooks, reviews, migration plans) lives in `docs/`;
+`memory/features/` keeps its own identity as the per-feature Living Memory record.
 
 ## Development workflow
 
@@ -125,7 +130,7 @@ This project is built spec-first, in a tight loop:
 API/Schema Spec -> Gherkin (.feature) -> PyTest (unit + integration) -> Implementation -> Refactor
 ```
 
-Tests are split into two tiers (`PROJECT_MEMORY.md` §8.2):
+Tests are split into two tiers (`docs/PROJECT_MEMORY.md` §8.2):
 - **Deterministic Tier** — structural/contract tests, fully mocked, blocks merge on
   failure (`pytest`).
 - **Probabilistic Tier** — quality scores (`ragas`, LangSmith LLM-as-judge), gated
@@ -141,13 +146,13 @@ baseline met, and the Feature Log row filled in.
 - `python3 -m unittest discover -s tests` — full Deterministic Tier suite (190/190 passing).
 - `python3 -m pyflakes src tests` (or your preferred linter) — lint check.
 - `scripts/*.py` — most exit non-zero or print an explicit sandbox-limitation
-  message rather than silently faking results; see PROJECT_MEMORY.md §10 for
+  message rather than silently faking results; see docs/PROJECT_MEMORY.md §10 for
   which scripts do which, and why.
 
 ## Status
 
 All 14 Phase 4 roadmap items are **done** (ADR-007 through ADR-020) — see §6
-(Feature Log), §9 (Roadmap), and §10 (Retrospective) of `PROJECT_MEMORY.md`.
+(Feature Log), §9 (Roadmap), and §10 (Retrospective) of `docs/PROJECT_MEMORY.md`.
 Every feature is implemented and covered by Deterministic Tier tests, but none
 has run against its real external dependency (LLM, vector DB, LangSmith, etc.)
 — this sandbox has no PyPI/network/Docker egress, so every such dependency is

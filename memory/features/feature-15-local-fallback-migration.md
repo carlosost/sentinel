@@ -5,7 +5,7 @@ dependency-ordered backlog, since it touches infra/gateway config, not the graph
 **Status:** Done (2026-06-28)
 **PMA sections touched:** ADR-023 (new), §3 Pillar 5, §6 Feature Log, §7 (new Open
 Questions #16, #17), §9 item 15
-**Source of truth:** `MIGRATION_PLAN.md` (full plan — this file tracks its execution
+**Source of truth:** `docs/MIGRATION_PLAN.md` (full plan — this file tracks its execution
 against this project's Conflict-Check/Gherkin/PyTest/Definition-of-Done convention;
 it does not restate the plan's reasoning, only its conflict surface and status)
 
@@ -16,7 +16,7 @@ Replace the two paid-API fallback dependencies in `infra/litellm_config.yaml`
 chat aliases; `cohere/embed-english-v3.0` backing the embedding alias) with locally
 -served open-weights models via Ollama, gated behind a shadow-verification rollout
 before any paid key is revoked. `sentinel-guardrail`'s TogetherAI-served primary is
-explicitly out of scope (Phase 5 of `MIGRATION_PLAN.md`, separate approval required).
+explicitly out of scope (Phase 5 of `docs/MIGRATION_PLAN.md`, separate approval required).
 
 ## Step 1 — Conflict Check
 
@@ -27,7 +27,7 @@ explicitly out of scope (Phase 5 of `MIGRATION_PLAN.md`, separate approval requi
 | **ADR-006 (lint, CI-blocking)** | No conflict — `scripts/lint_gateway_usage.sh` greps for `ChatOpenAI(`/`ChatAnthropic(`/direct SDK imports in `src/`/`scripts/`; this migration touches only YAML/env/Makefile, no Python import added. Re-run after Phase 2 to confirm, not assumed. |
 | ADR-007 (scaffolding) | No conflict — no new module layout decisions needed; `scripts/pull_local_models.sh` follows the existing `scripts/*.sh` convention (`check_env.sh`, `lint_gateway_usage.sh`). |
 | ADR-018 (LiteLLM production config: fallback chains, caching, rate limits) | **Extends, does not conflict.** This feature is additive within ADR-018's own mechanism — a `fallbacks:` list entry's target model string changes provider; the fallback-chain *structure* ADR-018 established is unchanged. Phase 4's shadow rollout adds a third-priority fallback entry temporarily, also additive. |
-| ADR-019 (real Llama Guard inference) | No conflict — `sentinel-guardrail`/`-fallback` are explicitly untouched (Scope Note #2 of `MIGRATION_PLAN.md`); confirmed no alias-name overlap with the six aliases this feature touches. |
+| ADR-019 (real Llama Guard inference) | No conflict — `sentinel-guardrail`/`-fallback` are explicitly untouched (Scope Note #2 of `docs/MIGRATION_PLAN.md`); confirmed no alias-name overlap with the six aliases this feature touches. |
 | ADR-020 (fine-tuning promotion criteria) | No conflict, but its pattern is explicitly reused rather than reinvented: ADR-023's Phase 4 promotion gate mirrors `PROMOTION_MARGIN`'s gating philosophy (beat a recorded baseline by a configured margin) for the same reason — never invent a second gating philosophy when one already exists in the PMA. |
 | ADR-021 (sandbox dependency shims) | **Confirmed not inherited.** Unlike Features 01–14, this feature's surface (`infra/`, `scripts/`, env) has no Python import requiring the stubbed `langgraph`/`langchain-openai`/`pydantic` packages — it can be executed and verified on a machine with real Docker/network access without first resolving Open Question #15. This is a deliberate scope boundary (see ADR-023's "first multi-phase change provably contained to infra+scripts+env"), not an oversight. |
 | §5.1 IncidentState schema | No conflict — no state field touched. |
@@ -43,12 +43,12 @@ reverted at cutover (Phase 4.5), not a permanent architectural change.
 
 ## New ADR
 
-See **ADR-023** in `PROJECT_MEMORY.md` §2 (full decision record). Not restated here
+See **ADR-023** in `docs/PROJECT_MEMORY.md` §2 (full decision record). Not restated here
 per this project's convention that ADRs live in the PMA; feature files reference them.
 
 ## Blast Radius
 
-- **No existing test breaks.** Confirmed by `MIGRATION_PLAN.md` Phase 3.2's regression
+- **No existing test breaks.** Confirmed by `docs/MIGRATION_PLAN.md` Phase 3.2's regression
   matrix: `tests/gateway/test_client_factory.py`, `tests/evals/test_gateway_compliance.py`,
   and every mocked-client node test (`test_router.py`, `test_grade_documents.py`,
   `test_diagnose.py`, `test_propose_action.py`, `test_write_postmortem.py`) assert on
@@ -60,7 +60,7 @@ per this project's convention that ADRs live in the PMA; feature files reference
   definition. See PyTest Skeletons below.
 - **Open Question #16 (embedding-dimension mismatch) must be resolved, not
   papered over,** before Phase 2 is considered complete — flagged explicitly in
-  `MIGRATION_PLAN.md` Phase 3.4 and carried into the PMA rather than silently
+  `docs/MIGRATION_PLAN.md` Phase 3.4 and carried into the PMA rather than silently
   absorbed into a "fix it later" comment.
 
 ## Pillar Impact
@@ -127,7 +127,7 @@ def test_embedding_fallback_returns_correct_dimensionality():
 
 ## Implementation Status
 
-**Phase checklist (per `MIGRATION_PLAN.md`):**
+**Phase checklist (per `docs/MIGRATION_PLAN.md`):**
 - [x] Phase 1 — Local infra setup: `ollama` service in `infra/docker-compose.yml`
       (with healthcheck, `ollama_models` volume, host port 11434 for manual
       testing only), added to `litellm`'s `depends_on`; `OLLAMA_BASE_URL` wired
@@ -160,9 +160,9 @@ def test_embedding_fallback_returns_correct_dimensionality():
       the file's own docstring); embedding-dimension mismatch (Open Question #16)
       resolved explicitly — Option B (fail loudly via a new
       `EmbeddingDimensionMismatchError`), Option A (per-dimension index) rejected
-      for v1, full reasoning in PROJECT_MEMORY.md §7's dated resolution note.
+      for v1, full reasoning in docs/PROJECT_MEMORY.md §7's dated resolution note.
 - [x] Phase 4 — Shadow rollout instrumentation: **premise corrected before
-      implementation, not silently reinterpreted** — `MIGRATION_PLAN.md` §4.1
+      implementation, not silently reinterpreted** — `docs/MIGRATION_PLAN.md` §4.1
       assumed a still-live paid fallback to shadow behind; Phase 2 already cut
       the `*-fallback` aliases over directly, so no such tier exists. Asked the
       user explicitly (`AskUserQuestion`); chose "retroactive validation."
@@ -173,7 +173,7 @@ def test_embedding_fallback_returns_correct_dimensionality():
       not against the now-nonexistent paid baseline. 14 new tests in
       `tests/gateway/test_shadow_fallback.py` (Deterministic Tier, mocked
       clients). Promotion-gate metric corrected in Open Question #17 (see
-      PROJECT_MEMORY.md §7) — the numeric threshold itself remains a
+      docs/PROJECT_MEMORY.md §7) — the numeric threshold itself remains a
       placeholder, no real shadow data exists in this sandbox to derive one.
 - [x] Phase 4.5 — Cutover: paid fallback tier removed from `fallbacks:` lists
       (**already done** — Phase 2 overwrote them directly, nothing left to
@@ -187,7 +187,7 @@ def test_embedding_fallback_returns_correct_dimensionality():
       verify itself, recorded as such, not silently assumed); `infra/.env`
       and `infra/.env.example`'s commented-out key lines annotated as dead
       historical record, not a live rollback path; ADR-023's
-      implementation-status updated to Done in `PROJECT_MEMORY.md`, with a
+      implementation-status updated to Done in `docs/PROJECT_MEMORY.md`, with a
       "Resolved by ADR-023 — closed as moot" marker on Open Question #17
       (the promotion-gate threshold was never empirically derived and never
       will be under this ADR; recorded as an accepted, documented risk, not
@@ -203,7 +203,7 @@ Done.
 **Phase 4.5 detail:** Reverted, not merely disabled — `src/gateway/client_factory.py`'s
 entire `SHADOW_FALLBACK_ENABLED`/`shadow_alias_for`/`shadow_metadata`/
 `fire_shadow_chat_call` block is gone, replaced by a short comment pointing
-back to PROJECT_MEMORY.md and this file for history, per the instrumentation's
+back to docs/PROJECT_MEMORY.md and this file for history, per the instrumentation's
 own "temporary, reverted at cutover" design stated when it was built in Phase
 4. `tests/gateway/test_shadow_fallback.py` (14 tests) deleted alongside it.
 This was a deliberate revert, not a regression: the code existed to validate
@@ -298,13 +298,13 @@ compose` itself once Docker is available — quoting is YAML-only, identical
 runtime value.
 
 **Definition of Done (will be checked off phase-by-phase, not all at once):**
-- [x] Spec committed: ADR-023 (PROJECT_MEMORY.md §2), this feature file, Pillar 5
+- [x] Spec committed: ADR-023 (docs/PROJECT_MEMORY.md §2), this feature file, Pillar 5
       implementation-status bullet, Feature Log row, Open Questions #16/#17,
       roadmap item 15 — all in place before any code/config changes.
-- [x] Phase 1–4.5 implementation matches `MIGRATION_PLAN.md` and this file's
+- [x] Phase 1–4.5 implementation matches `docs/MIGRATION_PLAN.md` and this file's
       phase checklist, **with one explicitly user-approved deviation**: Phase
       4's shadow-comparison baseline was the primary model's output, not the
-      paid fallback's (MIGRATION_PLAN.md's literal wording), because Phase 2's
+      paid fallback's (docs/MIGRATION_PLAN.md's literal wording), because Phase 2's
       direct cutover left no live paid fallback to compare against. Documented
       in ADR-023's dated correction and Open Question #17, not silently
       followed as originally worded. All phases complete.
@@ -324,9 +324,9 @@ runtime value.
       moot rather than answered: there was never a window in which a real
       promotion gate could have blocked the Phase 2 cutover, so no shadow data
       collected now could retroactively gate a decision already made. This is
-      recorded in PROJECT_MEMORY.md as an accepted, documented risk — not a
+      recorded in docs/PROJECT_MEMORY.md as an accepted, documented risk — not a
       number invented to check this box.
-- [x] PROJECT_MEMORY.md's ADR-023 implementation-status updated to Done, with a
+- [x] docs/PROJECT_MEMORY.md's ADR-023 implementation-status updated to Done, with a
       "Resolved by ADR-023 — closed as moot" marker on Open Question #17, at
       Phase 4.5 (2026-06-28). The manual key-revocation step was performed by
       the user and confirmed via explicit attestation, not independently

@@ -1572,6 +1572,41 @@ the local-fallback migration plan (ADR-023) and fixed here rather than left
 inconsistent, per this document's own "never silently lose/skip a documented
 deliverable" convention.
 
+### 10.0 2026-06-30 — Repository reorg: root `.md` files and `LLM_AGNOSTICISM_REVIEW.md` moved into `docs/`
+
+User asked whether moving all root-level `.md` files and `memory/features/` into a
+new `docs/` directory would make sense (`docs/` already existed, holding only
+`SWAPPING_MODELS.md`). Recommendation given and accepted on two points:
+**`README.md` stays at repo root** (GitHub/tooling renders it on the repo's landing
+page — moving it would break that convention for no benefit), and **`memory/features/`
+stays a separate top-level directory** (it is this project's own named "Living
+Memory" per-feature record, a distinct concept from general documentation, not a
+generic docs folder).
+
+Moved into `docs/`: `LITELLM_USAGE_REVIEW.md`, `LLM_AGNOSTICISM_REVIEW.md` (was
+untracked in git until this move — picked up here), `LLM_App_Meta_Framework.md`,
+`MASTER_ITERATION_PROMPT.md`, `MIGRATION_PLAN.md`, `PROJECT_MEMORY.md` (this file),
+`USAGE.md`. None of these files are read by any Python/shell code at runtime —
+confirmed by grep across `src/`, `scripts/`, `tests/` before moving — every
+reference found was a prose/docstring/comment pointer, not a resolved file path, so
+the move could not silently break test or runtime behavior. All such textual
+references across `infra/`, `memory/features/*.md`, `scripts/`, `src/`, `tests/`,
+`Makefile`, and `README.md` were updated to the `docs/`-prefixed path in the same
+pass (e.g. `PROJECT_MEMORY.md` → `docs/PROJECT_MEMORY.md`), so no stale pointer was
+left behind, per this document's own "never silently lose/break a documented
+reference" convention. Cross-references between two files that both now live in
+`docs/` (e.g. `MASTER_ITERATION_PROMPT.md` → `PROJECT_MEMORY.md`) were left as bare
+filenames — still correct, both are siblings in the same directory now.
+`README.md`'s repository-layout tree and prose pointers were updated to reflect the
+new `docs/` location. Verified after the move: full suite still 197/197 passing (3
+skipped), `scripts/lint_gateway_usage.sh` clean — expected, since no code path
+depends on these files' location.
+
+Same day, immediately after: `sentinel_langgraph_diagram.png`/`.svg` (the two
+non-`.md` root artifacts) were also moved into `docs/` for the same reason — grep
+confirmed zero references to either filename anywhere in the repo, so the move
+required no reference updates.
+
 ### 10.1 What shipped
 
 All 14 Phase 4 roadmap items (§9) are **Done**: a full `entry → guardrail_input →

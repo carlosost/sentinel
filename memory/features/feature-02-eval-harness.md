@@ -241,4 +241,4 @@ against the real `langsmith` package (Open Question #15 addendum):
 - [x] Tests pass deterministically, no live network/API keys required.
 - [ ] Probabilistic Tier / quality baseline — not applicable to this feature per
       the Pillar Impact caveat; first real baseline lands at roadmap item 4+.
-- [x] PROJECT_MEMORY.md and this file updated in the same pass as the code.
+- [x] docs/PROJECT_MEMORY.md and this file updated in the same pass as the code.

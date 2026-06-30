@@ -149,11 +149,11 @@ def get_embedding_client(model: str, **kwargs) -> _EmbeddingClient:
 # `SHADOW_FALLBACK_ENABLED`/`shadow_alias_for`/`shadow_metadata`/
 # `fire_shadow_chat_call` lived here from Phase 4 through Phase 4.5's cutover
 # confirmation (Anthropic/Cohere keys revoked at the provider dashboards,
-# 2026-06-28). They were explicitly speced in ADR-023/MIGRATION_PLAN.md as
+# 2026-06-28). They were explicitly speced in ADR-023/docs/MIGRATION_PLAN.md as
 # temporary and feature-flagged-off-by-default, to be reverted once cutover
 # was confirmed — not a permanent architectural addition, so removal here is
 # the plan working as designed, not a loss of functionality. Full history
 # (why it existed, the retroactive-validation reinterpretation, all 14 of its
-# unit tests) is preserved in PROJECT_MEMORY.md's ADR-023 entry and
+# unit tests) is preserved in docs/PROJECT_MEMORY.md's ADR-023 entry and
 # `memory/features/feature-15-local-fallback-migration.md`'s Phase 4 detail —
 # consult those, not git blame, if this logic is ever needed again.

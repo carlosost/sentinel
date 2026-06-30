@@ -253,14 +253,14 @@ silently in the future).
 
 **New Open Question:** none — the rate-limit/budget-cap placeholder concern
 this feature's design phase flagged was already pre-existing as Open Question
-#12 in `PROJECT_MEMORY.md` §7 (confirmed by direct read before writing the
+#12 in `docs/PROJECT_MEMORY.md` §7 (confirmed by direct read before writing the
 Feature Log row, applying the same correction discipline Feature 11's Open
 Question #11 mismatch established).
 
 **New ADR-021 addendum:** `src/observability/tracing.py` and
 `src/gateway/litellm_proxy.py` are both new sandbox dependency shims (no
 PyPI/network egress here for the real `langsmith` SDK or a running `litellm`
-proxy) — recorded as an ADR-021 addendum in `PROJECT_MEMORY.md`, growing Open
+proxy) — recorded as an ADR-021 addendum in `docs/PROJECT_MEMORY.md`, growing Open
 Question #15's scope.
 
 **Verification:**
@@ -278,7 +278,7 @@ Question #15's scope.
       supplementary test files.
 - [x] Implementation matches the spec; no undocumented deviation.
 - [x] Full deterministic suite green; lint green; eval harness mechanics green.
-- [x] `PROJECT_MEMORY.md` updated (ADR-018 implementation-status bullet,
+- [x] `docs/PROJECT_MEMORY.md` updated (ADR-018 implementation-status bullet,
       ADR-021 addendum, Feature Log row, §9 checkbox). §3 Pillar 4/5
       implementation-status bullets were already accurately pre-drafted —
       confirmed correct on read, no edit needed.
@@ -291,7 +291,7 @@ feature's `Status: Done` and everything above is untouched.** After Feature 15's
 local-fallback migration closed out (ADR-023 Done, shadow instrumentation
 reverted), a usage review was run against this feature's own ADR-018 contract to
 confirm the LiteLLM gateway is still being used correctly. Full review:
-`LITELLM_USAGE_REVIEW.md` (repo root). Summary relevant to this feature:
+`docs/LITELLM_USAGE_REVIEW.md` (repo root). Summary relevant to this feature:
 
 - The alias-indirection/fallback/caching/rate-limit/trace_id contract this ADR
   established is fully intact. `tests/gateway/test_litellm_config_yaml.py` and
@@ -313,8 +313,8 @@ confirm the LiteLLM gateway is still being used correctly. Full review:
   alias against the config; only the real proxy or `MockLiteLLMProxy.complete()`
   would. Harmless today only because nothing in the smoke path calls `.invoke()`.
   Not fixed here — flagged per this project's "surface, don't silently fix"
-  convention; full detail and a suggested fix are in `LITELLM_USAGE_REVIEW.md` §2.2.
-  Tracked as a candidate new Open Question in `PROJECT_MEMORY.md` if/when picked up.
+  convention; full detail and a suggested fix are in `docs/LITELLM_USAGE_REVIEW.md` §2.2.
+  Tracked as a candidate new Open Question in `docs/PROJECT_MEMORY.md` if/when picked up.
 
 **Fixed 2026-06-28, same day — closed, not left as a candidate.** Per the
 "more durable fix" the review recommended: `_aliases_referenced_in_source()`
@@ -350,5 +350,121 @@ would newly trip on (`scripts/check_env.sh`'s `sentinel-*` mentions are inside
 a human-readable error string, not a `model=...` call site, so the regex
 correctly does not match them).
 
-**Status of the gap:** Resolved. `LITELLM_USAGE_REVIEW.md` §2.2 updated to
+**Status of the gap:** Resolved. `docs/LITELLM_USAGE_REVIEW.md` §2.2 updated to
 point here instead of describing it as open.
+
+---
+
+## 2026-06-28, later same day — docs/LLM_AGNOSTICISM_REVIEW.md Items 1 & 5: pin JSON mode for OpenAI-served primaries; document the embedding swap's re-ingestion cost
+
+A follow-up review of how model-agnostic Sentinel's gateway design actually
+is (`docs/LLM_AGNOSTICISM_REVIEW.md`) found Gap A: the Ollama-served fallback tier
+gets a structural JSON-output guarantee (`format: json`, Ollama's
+grammar-constrained mode), but the OpenAI-served chat primaries — the path
+carrying production traffic — had no equivalent and relied on the prompt's
+"respond with strict JSON only" instruction alone.
+
+**TDD order followed:** added
+`test_every_openai_served_chat_alias_enforces_json_response_format` to
+`tests/gateway/test_litellm_config_yaml.py` first, confirmed it failed red
+against the unedited config (`'sentinel-router' is served by
+'openai/gpt-4o-mini' (OpenAI) but does not pin response_format=json_object`),
+then added `response_format: { type: json_object }` to all six OpenAI-served
+chat primaries (`sentinel-router`, `sentinel-grader`, `sentinel-diagnose`,
+`sentinel-propose-action`, `sentinel-postmortem`, `sentinel-judge`) in
+`infra/litellm_config.yaml`.
+
+**A real correction found mid-fix, not silently absorbed:** the test's first
+draft excluded only `openai/text-embedding-*` from scope and went red again
+against `sentinel-guardrail-fallback` (`openai/omni-moderation-latest`) —
+OpenAI's separate `/moderations` endpoint, where `response_format` isn't a
+concept at all (it is not a `/chat/completions` model). Adding
+`response_format` there would have been an incorrect config edit, not a
+missing one. Fixed by excluding `openai/omni-moderation-*` from the test's
+scope as well, with the docstring explicitly recording why this exclusion
+exists — found by the test itself doing its job, not by manual review.
+
+**Item 5 (bundled, same file, same sitting):** added a dated comment directly
+above `sentinel-embedding`'s `model_list` entry stating that swapping its
+primary model is not config-only the way the chat aliases are — the new
+model's embedding dimensionality must match what `corpora/` was ingested
+with, or `EmbeddingDimensionMismatchError`
+(`src/retrieval/vector_search.py`, Open Question #16) fires on every
+retriever call — and that `scripts/ingest_corpora.py` must be re-run against
+every corpus before any traffic uses the new alias. This makes the cost
+visible to someone editing the YAML directly, not only to someone who reads
+`vector_search.py` first.
+
+**Verification:** isolated run of `tests/gateway/test_litellm_config_yaml.py`
+→ 4/4 passing (3 previous + 1 new); full suite
+(`python3 -m unittest discover -s tests -p "test_*.py"`) → 196/196 passing, 3
+skipped; `bash scripts/lint_gateway_usage.sh` → PASS.
+
+**Status:** Items 1 and 5 of `docs/LLM_AGNOSTICISM_REVIEW.md`'s plan are Done.
+
+---
+
+## 2026-06-28, later still — docs/LLM_AGNOSTICISM_REVIEW.md Item 3: mechanical drift check between check_env.sh and litellm_config.yaml's providers
+
+§1.4 of the agnosticism review named a real, if not-yet-triggered, risk:
+`infra/litellm_config.yaml`'s provider prefixes (`openai/`, `together_ai/`,
+`ollama_chat/`) and `scripts/check_env.sh`'s `REQUIRED_VARS` are two
+independently hand-maintained lists with nothing checking they stay
+consistent — the exact shape of drift `test_litellm_config_yaml.py` already
+fixed once today for code-vs-config alias names. ADR-023/Feature 15 had to
+edit both files by hand, in the same sitting, when it dropped
+`ANTHROPIC_API_KEY`/`COHERE_API_KEY` — it worked that time because someone
+remembered; nothing would have caught it if they hadn't.
+
+Added new file `tests/gateway/test_check_env_credentials_match_config.py`:
+derives the expected required-env-var set from `model_list`'s provider
+prefixes via a small, explicit `_PROVIDER_PREFIX_TO_REQUIRED_VAR` map
+(`openai` → `OPENAI_API_KEY`, `together_ai` → `TOGETHERAI_API_KEY`;
+`ollama`/`ollama_chat` need no key, by omission), parses
+`check_env.sh`'s `REQUIRED_VARS=(...)` array with a regex, and asserts the
+two sets match exactly in both directions (catches a newly-required
+credential nobody added to `check_env.sh`, and a stale one nobody removed).
+
+No existing bug to fix here — today's two files are already consistent, so
+this couldn't be driven through a real red-then-green cycle the way Items 1
+and 3 (`sentinel-chat`) were. Verified the test actually has teeth instead:
+temporarily appended a fake `ANTHROPIC_API_KEY` to `check_env.sh`'s
+`REQUIRED_VARS`, confirmed the test failed with the expected
+"still requires {'ANTHROPIC_API_KEY'}... no model_list entry... uses that
+provider anymore" message, then restored the file from a backup and
+confirmed via `diff` that it was byte-for-byte the original before re-running
+green.
+
+**Verification:** full suite (`python3 -m unittest discover -s tests -p
+"test_*.py"`) → 197/197 passing, 3 skipped (196 + 1 new test); `bash
+scripts/lint_gateway_usage.sh` → PASS.
+
+**Status:** Item 3 of `docs/LLM_AGNOSTICISM_REVIEW.md`'s plan is Done.
+
+---
+
+## 2026-06-28, end of day — docs/LLM_AGNOSTICISM_REVIEW.md Item 2: the swap runbook
+
+Wrote `docs/SWAPPING_MODELS.md`, the generalized, reusable version of the
+playbook ADR-023/Feature 15 executed once for a specific migration. Written
+last among Items 1/3/5/2 on purpose, per the plan's own stated order, so it
+describes the *current* state (response_format pinned, the credential-drift
+test in place, the embedding re-ingestion comment already in
+`litellm_config.yaml`) rather than needing a second pass.
+
+Covers: swapping a chat/guardrail alias's model (config-only, no node
+changes — Section 1); swapping the primary embedding model (config plus a
+mandatory `make ingest` re-run — Section 2); swapping the reranker or
+fine-tuned-embedding model (a real code change, by design, since ADR-011/
+ADR-020 deliberately kept both outside the gateway — Section 3); and an
+explicit list of what never needs to change for the first two (Section 4,
+backed by the lint + structural tests, not just an assertion).
+
+Item 4 (env-configurable reranker/fine-tuned-embedding model names) is
+explicitly named as not-yet-done in Section 3, per the user's decision to
+leave it for later — the runbook says so rather than silently describing a
+capability that doesn't exist yet.
+
+**Status:** Item 2 of `docs/LLM_AGNOSTICISM_REVIEW.md`'s plan is Done. Items 1,
+2, 3, and 5 are all Done; Item 4 remains open, deferred by explicit user
+choice, not forgotten.

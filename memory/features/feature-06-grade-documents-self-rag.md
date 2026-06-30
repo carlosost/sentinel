@@ -211,5 +211,5 @@ def test_grade_documents_uses_client_factory(mock_client_factory):
 - [x] All four Gherkin scenarios covered by passing tests, plus additional edge
       cases.
 - [x] Full test suite, lint, and eval harness all pass.
-- [x] `PROJECT_MEMORY.md` updated (Feature Log, ADR-012, ADR-021 addendum, §9 item
+- [x] `docs/PROJECT_MEMORY.md` updated (Feature Log, ADR-012, ADR-021 addendum, §9 item
       6, new Open Question for the threshold).

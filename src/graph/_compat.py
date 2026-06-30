@@ -55,7 +55,7 @@ ADDENDUM (Feature 09 — HITL interrupt/resume):
     persisted state without resuming execution — this is how a human's
     decision is written back before the resume call, matching the
     `update_state(...)` then `invoke(None, config=...)` two-step real langgraph
-    itself uses for this exact pattern (see PROJECT_MEMORY.md §3 Pillar 2).
+    itself uses for this exact pattern (see docs/PROJECT_MEMORY.md §3 Pillar 2).
 
 This shim still does NOT support real `langgraph`'s generator-based `interrupt()`
 return-value semantics, or genuine cross-process persistence (the checkpointer

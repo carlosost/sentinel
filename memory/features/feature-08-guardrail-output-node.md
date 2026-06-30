@@ -205,7 +205,7 @@ def test_safe_post_execution_routes_to_end(mock_guardrail_check):
 
 ### Definition of Done
 
-- [x] ADR-014 (pre-drafted in PROJECT_MEMORY.md) re-verified against the
+- [x] ADR-014 (pre-drafted in docs/PROJECT_MEMORY.md) re-verified against the
       actual Feature 03-07 codebase and confirmed accurate — implemented as
       specified.
 - [x] `guardrail_output` node + routing function implemented, reused at the
@@ -218,5 +218,5 @@ def test_safe_post_execution_routes_to_end(mock_guardrail_check):
 - [x] All Gherkin scenarios covered by passing tests, plus additional edge
       cases.
 - [x] Full test suite, lint, and eval harness all pass.
-- [x] `PROJECT_MEMORY.md` updated (Feature Log, §9 item 8; Open Question #6
+- [x] `docs/PROJECT_MEMORY.md` updated (Feature Log, §9 item 8; Open Question #6
       marked Resolved by ADR-014).

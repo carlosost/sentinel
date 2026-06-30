@@ -2,7 +2,7 @@
 `IncidentState` — the single shared state schema threaded through every graph node.
 
 This is the *initial* Phase 1 shape (ADR-007/Feature 01). It is amended additively by
-later features as their ADRs specify — see PROJECT_MEMORY.md §5.1 for the cumulative,
+later features as their ADRs specify — see docs/PROJECT_MEMORY.md §5.1 for the cumulative,
 canonical contract and which ADR introduced/amended each field. Each amendment is
 applied here as its corresponding feature is implemented, with a comment pointing at
 the ADR responsible, so this file's history mirrors the PMA's.
