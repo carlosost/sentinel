@@ -1,32 +1,85 @@
-"""Stdlib stand-in for fetching real LangSmith `retriever`/`reranker` spans
-(ADR-020).
+"""LangSmith retriever/reranker span fetcher for fine-tuning data export
+(ADR-020, ADR-024).
 
-ADR-021 established that this sandbox has no PyPI egress, so the real
-`langsmith` package (and a real running project to fetch spans from) is not
-available here. This module is that same substitution, scoped to exactly what
-`scripts/export_finetune_pairs.py` needs: a list of per-query span dicts
-carrying both the pre-rerank `retrieved_docs` and post-rerank `reranked_docs`
-shapes ADR-011 already pinned.
+ADR-024 (Production Readiness): `get_retriever_reranker_spans()` now fetches
+real LangSmith `retriever`/`reranker` run pairs when `langsmith` is installed
+and `LANGCHAIN_API_KEY` + `LANGCHAIN_PROJECT` are set. Falls back to raising
+`NotImplementedError` (the ADR-021 shim) otherwise.
 
-Swap for a real `langsmith.Client().list_runs(...)` call once this sandbox has
-real package access — see Open Question #15. Tests patch
-`get_retriever_reranker_spans` directly, the same seam pattern as
-`get_chat_client`/`get_reranker_model`.
+Tests patch `get_retriever_reranker_spans` directly at the script's import path
+— the same seam pattern as `get_chat_client`/`get_reranker_model`.
+
+The returned list is shaped `[{"query": str, "retrieved_docs": [...],
+"reranked_docs": [...]}]` (ADR-011's document shape), consumed by
+`scripts/export_finetune_pairs.py`.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import os
+from typing import Any, Dict, List, Optional
+
+# Real langsmith — used when installed (ADR-024).
+try:
+    from langsmith import Client as _LangSmithClient
+    _LANGSMITH_AVAILABLE = True
+except ImportError:
+    _LANGSMITH_AVAILABLE = False
 
 
-def get_retriever_reranker_spans() -> List[Dict[str, Any]]:
-    """Fetch retriever+reranker span pairs for every query run through the graph
-    recently, each shaped `{"query": str, "retrieved_docs": [...], "reranked_docs":
-    [...]}` (ADR-011's document shape). Real inference requires the `langsmith`
-    package and a configured project with real traces — neither available in
-    this sandbox (Open Question #15)."""
-    raise NotImplementedError(
-        "Fetching real LangSmith retriever/reranker spans requires the langsmith "
-        "package and a configured project with real traces, not available in "
-        "this sandbox (Open Question #15)."
+def get_retriever_reranker_spans(
+    project_name: Optional[str] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """Fetch retriever+reranker span pairs from LangSmith.
+
+    Each item is shaped `{"query": str, "retrieved_docs": [...],
+    "reranked_docs": [...]}` (ADR-011 document shape), consumed by
+    `scripts/export_finetune_pairs.py` to build fine-tuning pairs.
+
+    When `langsmith` is installed and `LANGCHAIN_API_KEY` is set, fetches real
+    runs from the project named by `project_name` (defaults to
+    `LANGCHAIN_PROJECT` env var). Raises `NotImplementedError` when neither
+    condition holds — the same fail-loud discipline as the other ADR-021 shims.
+
+    Args:
+        project_name: LangSmith project to query. Defaults to `LANGCHAIN_PROJECT`.
+        limit: Maximum number of retriever run pairs to fetch.
+    """
+    if not (_LANGSMITH_AVAILABLE and os.environ.get("LANGCHAIN_API_KEY")):
+        raise NotImplementedError(
+            "Fetching real LangSmith retriever/reranker spans requires the langsmith "
+            "package and LANGCHAIN_API_KEY to be set (run `make up` or set the env var)."
+        )
+
+    project = project_name or os.environ.get("LANGCHAIN_PROJECT", "sentinel")
+    client = _LangSmithClient()
+
+    # Fetch retriever runs paired with their sibling reranker runs.
+    retriever_runs = list(
+        client.list_runs(
+            project_name=project,
+            run_type="chain",
+            filter='eq(name, "retriever")',
+            limit=limit,
+        )
     )
+
+    spans: List[Dict[str, Any]] = []
+    for run in retriever_runs:
+        outputs = run.outputs or {}
+        inputs = run.inputs or {}
+        query = inputs.get("query", "")
+        retrieved_docs = outputs.get("retrieved_docs", [])
+        reranked_docs = outputs.get("reranked_docs", retrieved_docs)
+        if query and retrieved_docs:
+            spans.append(
+                {
+                    "query": query,
+                    "retrieved_docs": retrieved_docs,
+                    "reranked_docs": reranked_docs,
+                    "run_id": str(run.id),
+                }
+            )
+
+    return spans

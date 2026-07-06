@@ -1,13 +1,12 @@
-# Local infra (ADR-002, ADR-003, ADR-007). Postgres backs both pgvector (corpus
-# retrieval, roadmap item 4) and the LangGraph checkpointer (HITL durability,
-# roadmap item 9). Redis backs the LiteLLM proxy's semantic cache (ADR-018,
-# roadmap item 12). mock-staging-api is added later by ADR-016/Feature 10.
+# Local infra (ADR-002, ADR-003, ADR-007, ADR-024). Postgres backs both pgvector
+# (corpus retrieval) and the LangGraph checkpointer (HITL durability). Redis backs
+# the LiteLLM proxy's semantic cache (ADR-018). mock-staging-api provides a realistic
+# async boundary for the execute node (ADR-016/Feature 10, ADR-024).
 #
-# The `app` service (added alongside the Dockerfile/Makefile, ADR-021 era) builds
-# the project image and bind-mounts the repo for live local development. It has
-# no long-running server to front yet (Open Question #10 — no HTTP API designed),
-# so its default command is a one-shot smoke check (see scripts/entrypoint.sh);
-# `make test`/`make shell` override the command for real work.
+# The `app` service builds the project image and bind-mounts the repo for live local
+# development. Its default command is now `serve` (uvicorn src.api.app:app, port 8000)
+# — the HTTP API is wired (ADR-024, Open Question #10 resolved). `make test`/`make shell`
+# override the command for testing/debugging.
 #
 # Credentials: `litellm`'s required provider keys are OPENAI_API_KEY and
 # TOGETHERAI_API_KEY (frontier primaries + the guardrail primary) — come from
@@ -91,6 +90,22 @@ services:
       # primary, untouched per ADR-023's Phase 5 scope boundary).
       OLLAMA_BASE_URL: "http://ollama:11434"
 
+  mock-staging-api:
+    # Minimal FastAPI stub that accepts POST /execute with {tool, args} and returns
+    # {success, output, error}. Provides a realistic async boundary for the `execute`
+    # node (ADR-016, ADR-024) without touching real production systems.
+    # Build context: scripts/mock_staging_api/ (simple single-file FastAPI app).
+    build:
+      context: ..
+      dockerfile: scripts/mock_staging_api/Dockerfile
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   app:
     build:
       context: ..
@@ -102,14 +117,18 @@ services:
       - postgres
       - redis
       - litellm
+      - mock-staging-api
+    ports:
+      - "8000:8000"
     environment:
       LITELLM_PROXY_URL: http://litellm:4000
       LITELLM_VIRTUAL_KEY: ${LITELLM_VIRTUAL_KEY:-}
       DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel
-    # No long-running server yet (Open Question #10) — default command is the
-    # one-shot smoke check baked into the image; `make test`/`make shell`
-    # override this via `docker compose run`.
-    command: ["smoke"]
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-sentinel}
+    # Default: start the FastAPI HTTP server (ADR-024, Open Question #10 resolved).
+    # Override via `docker compose run app smoke` or `docker compose run app test`.
+    command: ["serve"]
 
 volumes:
   pgdata:

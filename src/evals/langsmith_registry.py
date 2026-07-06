@@ -1,19 +1,26 @@
-"""Minimal stand-in for the LangSmith Client's evaluator registry.
+"""LangSmith evaluator registry (ADR-008, ADR-024).
 
-ADR-021 established that this sandbox has no PyPI egress, so `langgraph`,
-`langchain-openai`, `pydantic`, and `pytest` were substituted with stdlib
-stand-ins for Feature 01, "and, until this constraint lifts, subsequent
-features." This module is that substitution for the real `langsmith` package's
-evaluator-registration surface, scoped to exactly what ADR-008 needs: register
-a named evaluator function and list/retrieve registered evaluators.
+ADR-024 (Production Readiness): when `langsmith` is installed, `registry` is
+backed by a real `langsmith.Client()`. The `_EvaluatorRegistry` shim (ADR-021)
+is kept as fallback so `make test-local` continues to work without a LangSmith
+API key.
 
-Swap for the real `langsmith.Client()` once real package access exists; see
-Open Question #15 (docs/PROJECT_MEMORY.md §7), which now also covers this file.
+Both implementations expose the same interface (`register_evaluator`,
+`list_evaluators`, `get_evaluator`) so CI runner code and registration code
+work unchanged against either backend.
 """
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List
+import os
+from typing import Callable, Dict, List, Optional
+
+# Real langsmith — used when installed and LANGCHAIN_API_KEY is set (ADR-024).
+try:
+    from langsmith import Client as _LangSmithClient
+    _LANGSMITH_AVAILABLE = True
+except ImportError:
+    _LANGSMITH_AVAILABLE = False
 
 
 class LangSmithRegistryError(Exception):
@@ -21,6 +28,9 @@ class LangSmithRegistryError(Exception):
 
 
 class _EvaluatorRegistry:
+    """In-process evaluator registry (ADR-021 shim). Used when langsmith is
+    not installed or LANGCHAIN_API_KEY is not set."""
+
     def __init__(self) -> None:
         self._evaluators: Dict[str, Callable] = {}
 
@@ -37,6 +47,44 @@ class _EvaluatorRegistry:
             raise LangSmithRegistryError(f"no evaluator registered under {name!r}") from exc
 
 
+class _LangSmithEvaluatorRegistry:
+    """Real evaluator registry backed by `langsmith.Client()` (ADR-024).
+
+    Evaluators are registered in-process (same as the shim) but the underlying
+    client is available for `scripts/run_eval.py` to call `.evaluate()` directly.
+    Falls back to raising `LangSmithRegistryError` for unknown names (same
+    contract as the shim).
+    """
+
+    def __init__(self, client: "_LangSmithClient") -> None:
+        self._client = client
+        self._evaluators: Dict[str, Callable] = {}
+
+    @property
+    def client(self) -> "_LangSmithClient":
+        """The underlying langsmith Client, for scripts that need it directly."""
+        return self._client
+
+    def register_evaluator(self, name: str, fn: Callable) -> None:
+        self._evaluators[name] = fn
+
+    def list_evaluators(self) -> List[str]:
+        return sorted(self._evaluators.keys())
+
+    def get_evaluator(self, name: str) -> Callable:
+        try:
+            return self._evaluators[name]
+        except KeyError as exc:
+            raise LangSmithRegistryError(f"no evaluator registered under {name!r}") from exc
+
+
+def _build_registry():
+    """Return the appropriate registry for the current environment."""
+    if _LANGSMITH_AVAILABLE and os.environ.get("LANGCHAIN_API_KEY"):
+        return _LangSmithEvaluatorRegistry(_LangSmithClient())
+    return _EvaluatorRegistry()
+
+
 # Process-wide singleton — mirrors how a real langsmith.Client() would be a
 # single handle shared by registration code and CI runner code.
-registry = _EvaluatorRegistry()
+registry = _build_registry()

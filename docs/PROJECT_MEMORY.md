@@ -706,6 +706,14 @@ fine-tuning data pipeline (Pillar 6) and the LLM-as-judge eval harness (Pillar 4
   flagged here rather than silently amended.)*
 - **Status:** Accepted.
 
+### ADR-024: Production-readiness shim swap via conditional imports (new, 2026-07-06)
+- **Context:** All LLM, graph, and storage calls are backed by stdlib shims that raise `NotImplementedError` (ADR-021). The project is functionally complete but cannot run against real infrastructure. The dev sandbox has no PyPI egress, so replacing shims wholesale would break `make test-local`.
+- **Decision:** Use the conditional import pattern throughout: `try: from real_pkg import X; _AVAILABLE = True; except ImportError: _AVAILABLE = False`. Factory functions (`get_chat_client`, `get_checkpointer`, `get_document_store`, `get_reranker_model`, `get_finetuned_embedding_model`, `get_staging_api_client`, `get_retriever_reranker_spans`) return real objects when packages are installed, shim objects otherwise. No call-site changes required — the seam is always the factory function, which tests already mock.
+- **Consequence:** `make test-local` continues to pass 197/197 with no network access. When installed on a machine with real packages (`pip install -r requirements.txt`) and environment credentials, every call automatically activates the real implementation. The shim classes (`_ChatClient`, `_EmbeddingClient`, `InMemoryCheckpointSaver`, `InMemoryDocumentStore`, `_CrossEncoder`, `_LocalEmbeddingModel`, `_StagingApiClient`) are preserved as documented fallbacks, not deleted, since they remain the test execution path.
+- **Files changed:** `src/gateway/client_factory.py`, `src/graph/build.py`, `src/graph/nodes/await_human_approval.py`, `src/graph/checkpoint.py`, `src/ingestion/document_store.py`, `src/retrieval/vector_search.py`, `src/reranking/cross_encoder.py`, `src/embeddings/finetuned_embeddings.py`, `src/tools/executors.py`, `src/evals/langsmith_registry.py`, `src/finetuning/langsmith_spans.py`.
+- **HTTP API (Open Question #10 resolved):** `src/api/app.py` — FastAPI with lifespan checkpointer init, `POST /runs` (start a run), `POST /runs/{thread_id}/approve` (write `HumanDecision` + resume). `scripts/entrypoint.sh` gains a `serve` case (`uvicorn src.api.app:app --host 0.0.0.0 --port 8000`); the `app` service in `infra/docker-compose.yml` now defaults to `serve` and exposes port 8000. `mock-staging-api` docker-compose service added (`scripts/mock_staging_api/`).
+- **Status:** Done (2026-07-06). All 197 Deterministic Tier tests pass. Gateway lint passes. Phase 3 (boot real infrastructure) is a credentials + `make up` + `infra/schema.sql` away.
+
 ### ADR-023: Replace paid Anthropic/Cohere fallback models with local Ollama-served open-weights models (new)
 - **Context:** `infra/litellm_config.yaml`'s fallback tier for six chat aliases is
   backed by `anthropic/claude-3-5-haiku-20241022` / `claude-3-5-sonnet-20241022`, and

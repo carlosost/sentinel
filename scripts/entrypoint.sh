@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# Container entrypoint (ADR-021 era — no HTTP API exists yet, see Open Question #10).
+# Container entrypoint (ADR-024 — HTTP API now exists, Open Question #10 resolved).
 #
 # Usage (first arg selects a mode; anything else is exec'd directly):
-#   smoke   (default) — import the package, build the graph, exercise the gateway
-#           config check and the guardrail stub. Confirms the image is wired
-#           correctly without requiring an API to exist yet.
-#   test    — run the full real pytest suite (requires the real langgraph/
-#             langchain-openai/pytest installed via requirements.txt — this is
-#             the image's job, not the dev sandbox's; see ADR-021).
+#   serve   (default) — start the FastAPI HTTP server (uvicorn src.api.app:app,
+#             port 8000). Requires DATABASE_URL. This is the production mode.
+#   smoke   — one-shot graph build + gateway wiring check. Used by `make smoke`
+#             to verify the image is correctly wired without starting a server.
+#   test    — run the full real pytest suite (requires real packages via
+#             requirements.txt; image's job, not the dev sandbox's; see ADR-021).
 #   shell / bash — drop into an interactive shell.
-#   anything else — exec'd as-is (e.g. a future `uvicorn src.api:app`).
+#   anything else — exec'd as-is.
 set -euo pipefail
 
-case "${1:-smoke}" in
+case "${1:-serve}" in
+  serve)
+    exec uvicorn src.api.app:app --host 0.0.0.0 --port 8000
+    ;;
   smoke)
     exec python3 -c "
 import os
@@ -48,7 +51,7 @@ client = get_chat_client(model='sentinel-router')
 assert client is not None
 
 print('Sentinel image smoke check passed: graph builds, guardrail stub responds, gateway client constructs.')
-print('No HTTP API exists yet (Open Question #10) — override CMD to run \"pytest\" or \"bash\" instead.')
+print('HTTP API: start with entrypoint.sh serve (uvicorn src.api.app:app --host 0.0.0.0 --port 8000).')
 "
     ;;
   test)

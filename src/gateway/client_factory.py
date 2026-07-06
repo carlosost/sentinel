@@ -11,13 +11,13 @@ per-key rate limits) on top of this via named model aliases configured in
 `infra/litellm_config.yaml`; this module only needs to know the alias name, not the
 underlying provider model.
 
-SANDBOX NOTE (ADR-021): this dev sandbox has no PyPI egress, so `langchain_openai`
-is not installable here. `_ChatClient`/`_EmbeddingClient` below are minimal stdlib
-stand-ins that preserve the public shape callers depend on (`.model_name`/`.model`,
-`.openai_api_base`). They are a temporary substitution, not a redesign — Open
-Question #15 tracks swapping them for the real `ChatOpenAI`/`OpenAIEmbeddings` once
-this runs somewhere with real package access, with a parity check to confirm the
-swap is a no-op for every call site.
+ADR-024 (Production Readiness): `get_chat_client`/`get_embedding_client` now return
+real `langchain_openai.ChatOpenAI`/`OpenAIEmbeddings` when the package is available,
+falling back to the `_ChatClient`/`_EmbeddingClient` stdlib shims (ADR-021) when it
+is not. The shims are kept as fallback so `make test-local` continues to pass in
+environments without PyPI access — the conditional import pattern makes the upgrade
+transparent: installing `langchain-openai` is the only action required to activate
+the real clients, with no code change.
 """
 
 from __future__ import annotations
@@ -27,6 +27,16 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from src.observability.tracing import get_current_trace_id
+
+# Real langchain_openai clients — used when the package is installed.
+# Falls back to stdlib shims (ADR-021) when not available, so this module
+# can be imported in environments without PyPI access (e.g. the dev sandbox).
+try:
+    from langchain_openai import ChatOpenAI as _RealChatClient
+    from langchain_openai import OpenAIEmbeddings as _RealEmbeddingClient
+    _LANGCHAIN_OPENAI_AVAILABLE = True
+except ImportError:
+    _LANGCHAIN_OPENAI_AVAILABLE = False
 
 #: Read once per process; tests override via monkeypatch/env, never by importing a
 #: provider SDK directly.
@@ -40,8 +50,10 @@ class GatewayConfigError(RuntimeError):
 
 @dataclass
 class _ChatClient:
-    """Stand-in for `langchain_openai.ChatOpenAI` (ADR-021). Exposes the subset of
-    the real client's surface that Sentinel's nodes currently depend on."""
+    """Stdlib fallback for `langchain_openai.ChatOpenAI` (ADR-021). Active only when
+    langchain_openai is not installed. Exposes the same public surface the real
+    client does (`.model_name`, `.openai_api_base`, `.invoke()`); `.invoke()` raises
+    NotImplementedError until the real package is present."""
 
     model_name: str
     base_url: str
@@ -52,16 +64,16 @@ class _ChatClient:
     def openai_api_base(self) -> str:
         return self.base_url
 
-    def invoke(self, *_args, **_kwargs):  # pragma: no cover - exercised once real client lands
+    def invoke(self, *_args, **_kwargs):  # pragma: no cover
         raise NotImplementedError(
-            "Real model invocation requires langchain_openai (Open Question #15); "
-            "not available in this sandbox."
+            "Real model invocation requires langchain_openai; install it via "
+            "`pip install -r requirements.txt` (ADR-024 / Open Question #15)."
         )
 
 
 @dataclass
 class _EmbeddingClient:
-    """Stand-in for `langchain_openai.OpenAIEmbeddings` (ADR-021)."""
+    """Stdlib fallback for `langchain_openai.OpenAIEmbeddings` (ADR-021)."""
 
     model: str
     base_url: str
@@ -74,8 +86,8 @@ class _EmbeddingClient:
 
     def embed_documents(self, *_args, **_kwargs):  # pragma: no cover
         raise NotImplementedError(
-            "Real embedding calls require langchain_openai (Open Question #15); "
-            "not available in this sandbox."
+            "Real embedding calls require langchain_openai; install it via "
+            "`pip install -r requirements.txt` (ADR-024 / Open Question #15)."
         )
 
 
@@ -111,36 +123,58 @@ def _with_trace_metadata(kwargs: dict[str, Any]) -> dict[str, Any]:
     return {**kwargs, "metadata": metadata}
 
 
-def get_chat_client(model: str, **kwargs) -> _ChatClient:
+def get_chat_client(model: str, **kwargs):
     """Construct a chat-completion client routed through the LiteLLM proxy.
 
+    Returns a real `langchain_openai.ChatOpenAI` when the package is installed,
+    or a `_ChatClient` stdlib shim otherwise (ADR-021/ADR-024).
+
     Args:
-        model: a model *alias* name (e.g. "sentinel-chat", "sentinel-guardrail"),
+        model: a model *alias* name (e.g. "sentinel-router", "sentinel-guardrail"),
             resolved to a real provider model + fallback chain by
             `infra/litellm_config.yaml` (ADR-018) — never a raw provider model
             string passed straight to a provider SDK.
         **kwargs: forwarded to the underlying client (e.g. `temperature`,
             `cache={"no-cache": True}` for the eval-determinism carve-out).
     """
+    extra = _with_trace_metadata(kwargs)
+    if _LANGCHAIN_OPENAI_AVAILABLE:
+        return _RealChatClient(
+            model=model,
+            openai_api_base=_proxy_base_url(),
+            openai_api_key=_virtual_key() or "unset",
+            **extra,
+        )
     return _ChatClient(
         model_name=model,
         base_url=_proxy_base_url(),
         api_key=_virtual_key() or "unset",
-        extra=_with_trace_metadata(kwargs),
+        extra=extra,
     )
 
 
-def get_embedding_client(model: str, **kwargs) -> _EmbeddingClient:
+def get_embedding_client(model: str, **kwargs):
     """Construct an embedding client routed through the LiteLLM proxy.
+
+    Returns a real `langchain_openai.OpenAIEmbeddings` when the package is
+    installed, or a `_EmbeddingClient` stdlib shim otherwise (ADR-021/ADR-024).
 
     Args:
         model: a model alias name (e.g. "sentinel-embedding"). See `get_chat_client`.
     """
+    extra = _with_trace_metadata(kwargs)
+    if _LANGCHAIN_OPENAI_AVAILABLE:
+        return _RealEmbeddingClient(
+            model=model,
+            openai_api_base=_proxy_base_url(),
+            openai_api_key=_virtual_key() or "unset",
+            **extra,
+        )
     return _EmbeddingClient(
         model=model,
         base_url=_proxy_base_url(),
         api_key=_virtual_key() or "unset",
-        extra=_with_trace_metadata(kwargs),
+        extra=extra,
     )
 
 

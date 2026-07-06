@@ -1,60 +1,48 @@
 """
-Stdlib stand-in for the pgvector cosine-similarity query ADR-011 specifies for
-`retriever` (`SELECT ... WHERE corpus = %s ORDER BY embedding <=> %s LIMIT %s`).
+Vector similarity search over the `documents` table (ADR-011, ADR-024).
 
-SANDBOX NOTE (ADR-021 addendum, Feature 05): `src/ingestion/document_store.py`'s
-docstring (Feature 04) explicitly deferred this — `InMemoryDocumentStore` stores
-rows but does not know how to rank them. This module is that deferred decision:
-plain-Python cosine similarity over the in-memory rows, filtered by corpus. It
-is a stand-in for pgvector's `<=>` operator, not a faithful reproduction of it
-(no index, no approximate search, O(n) per query) — fine for this sandbox's
-corpus sizes (a handful of synthetic documents per corpus), not a claim about
-production behavior. Open Question #15 tracks swapping this for a real
-psycopg2/pgvector query.
+ADR-024 (Production Readiness): `search()` now dispatches to either a real
+pgvector cosine-distance SQL query (when the store is a `PostgresDocumentStore`)
+or the original plain-Python cosine similarity (when the store is an
+`InMemoryDocumentStore`). The dispatch is duck-typed on the store's class, so no
+change is required in the `retriever` node.
+
+The plain-Python path (O(n), no index) is correct for the sandbox's corpus sizes;
+the pgvector path uses an ivfflat index and the `<=>` operator for production
+performance. `EmbeddingDimensionMismatchError` is raised on both paths when the
+query vector's dimension doesn't match the corpus (ADR-023 / Open Question #16).
 """
 
 from __future__ import annotations
 
+import json
 import math
 from typing import List, Tuple
 
-from src.ingestion.document_store import DocumentRow, InMemoryDocumentStore
+from src.ingestion.document_store import (
+    DocumentRow,
+    InMemoryDocumentStore,
+    PostgresDocumentStore,
+)
 
 
 class EmbeddingDimensionMismatchError(ValueError):
-    """Raised by `cosine_similarity`/`search` when the query embedding's
-    dimensionality does not match the corpus rows it is being compared
-    against.
+    """Raised when the query embedding's dimensionality does not match the corpus.
 
-    Open Question #16 (ADR-023, Feature 15) resolution: this is the
-    deliberate, named failure mode for a query embedding produced by a
-    different model than the one that embedded the corpus — most likely
-    `sentinel-embedding-fallback` (Ollama `bge-m3`, 1024-dim) answering a
-    query while `corpora/` was ingested via the primary
-    (`text-embedding-3-small`, 1536-dim; see `scripts/ingest_corpora.py`,
-    which always calls `embedding_model="sentinel-embedding"`, never the
-    `-fallback` alias). The decision (Option B over a per-dimension index):
-    fail loudly and let the `retriever` node raise rather than silently
-    truncating/padding a vector or returning similarity-ranked garbage. A
-    per-dimension index (Option A) was rejected as disproportionate for v1 —
-    this fallback only fires during a full OpenAI-embeddings outage, not
-    everyday traffic, so a hard, visible failure during a rare total outage
-    is an accepted tradeoff, not a gap. Subclasses `ValueError` so any
-    existing `except ValueError` callers are unaffected."""
+    Open Question #16 (ADR-023, Feature 15) resolution: deliberate fail-loud
+    behavior — never silently truncate/pad a vector or return garbage results.
+    Subclasses `ValueError` so existing `except ValueError` callers are unaffected.
+    """
 
 
 def cosine_similarity(a: List[float], b: List[float]) -> float:
-    """Cosine similarity in [-1, 1] (1 = identical direction). Returns 0.0 for a
-    zero vector rather than dividing by zero — an edge case pgvector itself
-    would reject differently, but one this stand-in must not crash on."""
+    """Cosine similarity in [-1, 1]. Returns 0.0 for a zero vector."""
     if len(a) != len(b):
         raise EmbeddingDimensionMismatchError(
-            f"vector length mismatch: {len(a)} vs {len(b)} — if this came from "
-            "a real query/corpus pair, the embedding fallback likely answered "
-            "with a different-dimension model than the corpus was ingested "
-            "with (see Open Question #16 / ADR-023)."
+            f"vector length mismatch: {len(a)} vs {len(b)} — embedding fallback "
+            "likely answered with a different-dimension model than the corpus was "
+            "ingested with (see ADR-023 / Open Question #16)."
         )
-
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
@@ -63,17 +51,84 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def search(
+def _search_inmemory(
     store: InMemoryDocumentStore,
+    corpus: str,
+    query_embedding: List[float],
+    k: int,
+) -> List[Tuple[DocumentRow, float]]:
+    """Plain-Python cosine similarity over the in-memory store (O(n), no index).
+    Correct for sandbox corpus sizes; not a production performance claim."""
+    candidates = store.rows_for_corpus(corpus)
+    scored = [
+        (row, cosine_similarity(query_embedding, row.embedding))
+        for row in candidates
+    ]
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return scored[:k]
+
+
+def _search_postgres(
+    store: PostgresDocumentStore,
+    corpus: str,
+    query_embedding: List[float],
+    k: int,
+) -> List[Tuple[DocumentRow, float]]:
+    """pgvector cosine-distance query using the ivfflat index (ADR-011/ADR-024).
+
+    Returns rows ordered by ascending cosine distance (`<=>`), which equals
+    descending cosine similarity. Raises `EmbeddingDimensionMismatchError` when
+    pgvector rejects the vector due to a dimension mismatch.
+    """
+    try:
+        rows = store._conn.execute(
+            """
+            SELECT id, corpus, content, embedding, metadata,
+                   1 - (embedding <=> %s::vector) AS score
+            FROM documents
+            WHERE corpus = %s
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (query_embedding, corpus, query_embedding, k),
+        ).fetchall()
+    except Exception as exc:
+        # pgvector raises a generic error on dimension mismatch; re-raise as
+        # our named error so callers get a consistent exception type.
+        if "different vector dimensions" in str(exc) or "vector" in str(exc).lower():
+            raise EmbeddingDimensionMismatchError(
+                f"pgvector dimension mismatch for corpus={corpus!r}: {exc} — "
+                "re-run `make ingest` after swapping the embedding model."
+            ) from exc
+        raise
+    return [
+        (
+            DocumentRow(
+                id=r[0],
+                corpus=r[1],
+                content=r[2],
+                embedding=list(r[3]),
+                metadata=json.loads(r[4]) if isinstance(r[4], str) else (r[4] or {}),
+            ),
+            float(r[5]),
+        )
+        for r in rows
+    ]
+
+
+def search(
+    store,
     corpus: str,
     query_embedding: List[float],
     *,
     k: int = 20,
 ) -> List[Tuple[DocumentRow, float]]:
-    """Return up to `k` rows from `corpus`, ranked by descending cosine
-    similarity to `query_embedding`. Fewer than `k` results is not an error —
-    it means the corpus has fewer than `k` rows (ADR-011's Gherkin scenario 1)."""
-    candidates = store.rows_for_corpus(corpus)
-    scored = [(row, cosine_similarity(query_embedding, row.embedding)) for row in candidates]
-    scored.sort(key=lambda pair: pair[1], reverse=True)
-    return scored[:k]
+    """Return up to `k` rows from `corpus`, ranked by descending cosine similarity.
+
+    Dispatches to the pgvector SQL path when `store` is a `PostgresDocumentStore`,
+    or the plain-Python path when it is an `InMemoryDocumentStore`. Fewer than `k`
+    results is not an error (ADR-011 Gherkin scenario 1).
+    """
+    if isinstance(store, PostgresDocumentStore):
+        return _search_postgres(store, corpus, query_embedding, k)
+    return _search_inmemory(store, corpus, query_embedding, k)
