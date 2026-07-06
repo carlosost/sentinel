@@ -1,22 +1,14 @@
 #!/usr/bin/env python3
-"""`make ingest` entry point (ADR-010): idempotently ingest
+"""`make ingest` entry point (ADR-010, ADR-024): idempotently ingest
 corpora/{runbooks,postmortems,infra_code_docs}/*.md into the `documents`
 store.
 
-SANDBOX NOTE (ADR-021 addendum, Feature 04): the store this script writes to
-is `src/ingestion/document_store.py`'s stdlib `InMemoryDocumentStore` shim,
-not real pgvector (see that module's docstring), and embeddings come from
-`client_factory.get_embedding_client(...)`, which itself requires
-`LITELLM_PROXY_URL` to be set (ADR-003) and whose stub client's
-`.embed_documents()` raises `NotImplementedError` even once that's set (Open
-Question #15). Running this script directly in this sandbox will therefore
-fail — either at client construction (`GatewayConfigError`, no proxy
-configured here) or at the embedding call itself — and that is expected and
-reported clearly below, not silently worked around. Ingestion *mechanics*
-(corpus tagging, idempotent upsert) are proven instead against a mocked
-embedding client in tests/ingestion/test_ingest_corpora.py, the same
-Deterministic Tier pattern used for every other gateway-backed call in this
-project (e.g. Feature 02's test_gateway_compliance.py).
+Runs inside Docker via `make ingest` (which calls `$(COMPOSE) run --rm app
+ingest`) so DATABASE_URL and LITELLM_PROXY_URL are automatically available
+from docker-compose.yml. Uses `get_document_store(DATABASE_URL)` — a real
+PostgresDocumentStore when DATABASE_URL is set, InMemoryDocumentStore as
+fallback. Ingestion mechanics (corpus tagging, idempotent upsert) are tested
+independently in tests/ingestion/test_ingest_corpora.py.
 """
 
 from __future__ import annotations
@@ -28,8 +20,10 @@ from typing import Dict, List
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+import os  # noqa: E402
+
 from src.gateway.client_factory import GatewayConfigError, get_embedding_client  # noqa: E402
-from src.ingestion.document_store import InMemoryDocumentStore  # noqa: E402
+from src.ingestion.document_store import get_document_store  # noqa: E402
 
 CORPORA_ROOT = REPO_ROOT / "corpora"
 CORPUS_NAMES = ("runbooks", "postmortems", "infra_code_docs")
@@ -44,7 +38,7 @@ def _load_corpus_files(corpus: str, root: Path) -> List[Path]:
 
 def ingest_corpus(
     corpus: str,
-    store: InMemoryDocumentStore,
+    store,
     *,
     root: Path = CORPORA_ROOT,
     embedding_model: str = "sentinel-embedding",
@@ -74,14 +68,17 @@ def ingest_corpus(
 
 
 def ingest_all(
-    store: InMemoryDocumentStore, *, root: Path = CORPORA_ROOT
+    store, *, root: Path = CORPORA_ROOT
 ) -> Dict[str, int]:
     return {corpus: ingest_corpus(corpus, store, root=root) for corpus in CORPUS_NAMES}
 
 
 def main() -> int:
-    store = InMemoryDocumentStore()
+    database_url = os.environ.get("DATABASE_URL")
+    store = get_document_store(database_url)
+    backend = "PostgresDocumentStore" if database_url else "InMemoryDocumentStore (no DATABASE_URL set)"
     print(f"Sentinel corpus ingestion — {CORPORA_ROOT.relative_to(REPO_ROOT)}")
+    print(f"  Store backend: {backend}")
 
     try:
         counts = ingest_all(store)

@@ -89,6 +89,9 @@ def get_checkpointer(database_url: Optional[str] = None):
     Postgres tables on `PostgresSaver`.
     """
     if _POSTGRES_CHECKPOINTER_AVAILABLE and database_url:
-        conn = _psycopg.connect(database_url)
+        # autocommit=True is required: PostgresSaver.setup() runs
+        # CREATE INDEX CONCURRENTLY, which Postgres forbids inside a
+        # transaction block (psycopg defaults to autocommit=False).
+        conn = _psycopg.connect(database_url, autocommit=True)
         return _PostgresSaver(conn)
     return InMemoryCheckpointSaver()

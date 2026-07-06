@@ -27,15 +27,27 @@ from typing import Any, Dict
 
 from src.gateway.client_factory import get_chat_client
 from src.graph.state import IncidentState
-from src.tools.registry import UnknownToolError, get_tool_spec
+from src.tools.registry import TOOL_REGISTRY, UnknownToolError, get_tool_spec
 
 _PROMPT_TEMPLATE = """You are an SRE remediation-proposal assistant. Given the \
-diagnosis below, propose exactly one remediation tool call. Respond with \
-strict JSON only, no prose: {{"tool": <string>, "args": <object>}}.
+diagnosis below, propose exactly one remediation tool call. You MUST choose \
+from the following tools only:
+
+{tool_list}
+
+Respond with strict JSON only, no prose: {{"tool": <string>, "args": <object>}}.
 
 Diagnosis:
 {diagnosis}
 """
+
+
+def _format_tool_list() -> str:
+    lines = []
+    for name, spec in TOOL_REGISTRY.items():
+        tag = "side-effecting" if spec["side_effecting"] else "read-only"
+        lines.append(f"  - {name} ({tag})")
+    return "\n".join(lines)
 
 
 class ProposeActionError(RuntimeError):
@@ -45,7 +57,10 @@ class ProposeActionError(RuntimeError):
 
 
 def _build_prompt(diagnosis: str) -> str:
-    return _PROMPT_TEMPLATE.format(diagnosis=diagnosis)
+    return _PROMPT_TEMPLATE.format(
+        tool_list=_format_tool_list(),
+        diagnosis=diagnosis,
+    )
 
 
 def propose_action(state: IncidentState) -> Dict[str, Any]:

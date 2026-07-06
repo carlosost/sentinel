@@ -38,6 +38,28 @@ try:
 except ImportError:
     _LANGCHAIN_OPENAI_AVAILABLE = False
 
+
+class _ContentUnwrappingChatClient:
+    """Thin wrapper around the real ChatOpenAI that unwraps AIMessage → str.
+
+    Every node in this codebase was written against the stdlib shim's
+    `.invoke()` contract, which returned a plain string. The real
+    `langchain_openai.ChatOpenAI.invoke()` returns an `AIMessage` object.
+    Rather than touching every node, this wrapper extracts `.content` so the
+    rest of the codebase sees the same string interface it always has.
+    """
+
+    def __init__(self, client) -> None:
+        self._client = client
+
+    def invoke(self, *args, **kwargs) -> str:
+        result = self._client.invoke(*args, **kwargs)
+        return result.content if hasattr(result, "content") else str(result)
+
+    # Forward attribute access for introspection (e.g. model_name, openai_api_base).
+    def __getattr__(self, name: str):
+        return getattr(self._client, name)
+
 #: Read once per process; tests override via monkeypatch/env, never by importing a
 #: provider SDK directly.
 _DEFAULT_PROXY_URL_ENV = "LITELLM_PROXY_URL"
@@ -139,11 +161,13 @@ def get_chat_client(model: str, **kwargs):
     """
     extra = _with_trace_metadata(kwargs)
     if _LANGCHAIN_OPENAI_AVAILABLE:
-        return _RealChatClient(
-            model=model,
-            openai_api_base=_proxy_base_url(),
-            openai_api_key=_virtual_key() or "unset",
-            **extra,
+        return _ContentUnwrappingChatClient(
+            _RealChatClient(
+                model=model,
+                openai_api_base=_proxy_base_url(),
+                openai_api_key=_virtual_key() or "unset",
+                **extra,
+            )
         )
     return _ChatClient(
         model_name=model,
@@ -164,11 +188,18 @@ def get_embedding_client(model: str, **kwargs):
     """
     extra = _with_trace_metadata(kwargs)
     if _LANGCHAIN_OPENAI_AVAILABLE:
+        # OpenAIEmbeddings does not forward unknown constructor kwargs to the
+        # underlying openai Embeddings.create() call — it dumps them into
+        # model_kwargs, which then surfaces as a TypeError at call time.
+        # `metadata` is a LiteLLM proxy-level header, not an OpenAI param,
+        # so strip it here. Trace IDs are still captured by LangSmith's
+        # auto-instrumentation on the surrounding traced_run() context.
+        embedding_extra = {k: v for k, v in extra.items() if k != "metadata"}
         return _RealEmbeddingClient(
             model=model,
             openai_api_base=_proxy_base_url(),
             openai_api_key=_virtual_key() or "unset",
-            **extra,
+            **embedding_extra,
         )
     return _EmbeddingClient(
         model=model,

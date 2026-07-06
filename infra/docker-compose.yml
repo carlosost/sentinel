@@ -123,6 +123,7 @@ services:
       DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel
       LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
       LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-sentinel}
+      HF_TOKEN: ${HF_TOKEN:-}  # optional — suppresses HF Hub rate-limit warnings
     # Default: start the FastAPI HTTP server (ADR-024, Open Question #10 resolved).
     # Override via `docker compose run app smoke` or `docker compose run app test`.
     command: ["serve"]

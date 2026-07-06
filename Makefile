@@ -178,14 +178,14 @@ lint:
 	@bash scripts/lint_gateway_usage.sh
 
 ## eval         |  Run the eval harness (Probabilistic Tier, reported separately from tests)
-eval:
-	@printf "$(CYAN)$(BOLD)▶ Running eval harness...$(RESET)\n"
-	@python3 scripts/run_eval.py
+eval: check-env
+	@printf "$(CYAN)$(BOLD)▶ Running eval harness (inside Docker)...$(RESET)\n"
+	@$(COMPOSE) run --rm app eval
 
 ## ingest       |  Ingest corpora/ into the documents store (ADR-010)
-ingest:
-	@printf "$(CYAN)$(BOLD)▶ Running corpus ingestion...$(RESET)\n"
-	@python3 scripts/ingest_corpora.py
+ingest: check-env
+	@printf "$(CYAN)$(BOLD)▶ Running corpus ingestion (inside Docker)...$(RESET)\n"
+	@$(COMPOSE) run --rm app ingest
 
 ## pull-local-models  |  Pull Ollama models: fallbacks + llama-guard3 (ADR-023 + Phase5)
 pull-local-models:

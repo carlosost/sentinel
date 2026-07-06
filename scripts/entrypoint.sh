@@ -16,6 +16,12 @@ case "${1:-serve}" in
   serve)
     exec uvicorn src.api.app:app --host 0.0.0.0 --port 8000
     ;;
+  ingest)
+    exec python3 scripts/ingest_corpora.py
+    ;;
+  eval)
+    exec python3 scripts/run_eval.py
+    ;;
   smoke)
     exec python3 -c "
 import os

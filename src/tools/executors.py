@@ -26,7 +26,7 @@ try:
 except ImportError:
     _HTTPX_AVAILABLE = False
 
-_DEFAULT_BASE_URL = "http://mock-staging-api"
+_DEFAULT_BASE_URL = "http://mock-staging-api:8001"
 
 
 class ExecutorError(RuntimeError):
