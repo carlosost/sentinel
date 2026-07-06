@@ -1,11 +1,14 @@
 # ==============================================================================
 #  Sentinel — Autonomous SRE Incident Copilot — Developer Makefile
 #
-#  Status note: there is no long-running app/API container yet (Open Question
-#  #10, docs/PROJECT_MEMORY.md §7) — that lands around roadmap items 9-10. Until
-#  then, `app` is a one-shot container: `make smoke`/`make test`/`make shell`
-#  each run it fresh via `docker compose run --rm`, not `docker exec` into an
-#  already-running process.
+#  Production boot sequence (first time):
+#    1. cp infra/.env.example infra/.env  &&  edit infra/.env
+#    2. make up               — start Postgres, Redis, LiteLLM, Ollama, mock-staging-api
+#    3. make pull-local-models — pull Ollama models (~14 GB, one-time)
+#    4. make init-db          — apply infra/schema.sql (pgvector table + indexes)
+#    5. make ingest           — embed corpora/ into pgvector
+#    6. make smoke            — verify graph + gateway + guardrail wiring
+#    7. make serve            — start the FastAPI HTTP server (port 8000)
 #
 #  Two ways to run tests — pick based on what's available:
 #
@@ -13,35 +16,31 @@
 #                      langchain-openai, pytest — via requirements.txt in the
 #                      image). Requires Docker.
 #    make test-local   Same test files, run with stdlib `unittest` directly on
-#                      the host — no Docker, no network required. This is how
-#                      Feature 01 was actually verified in a sandbox with no
-#                      PyPI egress (ADR-021); it exercises the stdlib shims in
-#                      src/gateway/client_factory.py and src/graph/_compat.py,
-#                      not the real langgraph/langchain-openai libraries.
+#                      the host — no Docker, no network required. Exercises the
+#                      conditional-import shims (ADR-024) — real packages
+#                      activate automatically when installed.
 #
 #  Quick reference:
 #
-#    make check-env     Verify infra/.env has real LLM provider credentials
-#                         (run automatically before up/smoke/test/shell)
-#    make build         Build the app image
-#    make up            Start Postgres + Redis + LiteLLM + Ollama (infra only)
-#    make pull-local-models  Pull local Ollama models for the fallback migration
-#                         (ADR-023, Feature 15 — separate step, not part of `up`
-#                         until Phase 4 cutover, since these are multi-GB pulls)
-#    make down          Stop infra containers (volumes preserved)
-#    make clean         Stop infra AND wipe all Docker volumes
-#    make smoke         One-shot smoke check (graph builds, gateway/guardrail wired)
-#    make test          Full pytest suite inside Docker (real deps)
-#    make test-local    Deterministic-tier tests via stdlib unittest (no Docker)
-#    make lint          Run the ADR-006 gateway-usage lint script
-#    make eval          Run the eval harness (Probabilistic Tier, ADR-008)
-#    make ingest        Ingest corpora/ into the documents store (ADR-010;
-#                         fails in this sandbox — no LiteLLM proxy/real
-#                         embedding client here, see Open Question #15)
-#    make shell         Interactive shell inside the app image
-#    make shell-db      psql session inside the postgres container
-#    make logs          Tail infra service logs
-#    make help          Print this help screen
+#    make check-env          Verify infra/.env has real LLM provider credentials
+#    make build              Build the app image
+#    make up                 Start all infra services (Postgres, Redis, LiteLLM,
+#                              Ollama, mock-staging-api)
+#    make pull-local-models  Pull local Ollama models (ADR-023 + ADR-023-Phase5)
+#    make init-db            Apply infra/schema.sql to Postgres (idempotent)
+#    make down               Stop containers (volumes preserved)
+#    make clean              Stop containers AND wipe all Docker volumes
+#    make serve              Start the FastAPI HTTP server (ADR-024, port 8000)
+#    make smoke              One-shot wiring check (no server started)
+#    make test               Full pytest suite inside Docker (real deps)
+#    make test-local         Deterministic-tier tests via stdlib unittest (no Docker)
+#    make lint               Run the ADR-006 gateway-usage lint script
+#    make eval               Run the eval harness (Probabilistic Tier, ADR-008)
+#    make ingest             Ingest corpora/ into the documents store (ADR-010)
+#    make shell              Interactive shell inside the app image
+#    make shell-db           psql session inside the postgres container
+#    make logs               Tail infra service logs
+#    make help               Print this help screen
 #
 # ==============================================================================
 
@@ -76,8 +75,8 @@ RESET  := \033[0m
 # ------------------------------------------------------------------------------
 .PHONY: \
   check-env build up down clean \
-  smoke test test-local lint eval ingest \
-  pull-local-models \
+  bootstrap serve smoke test test-local lint eval ingest \
+  pull-local-models init-db \
   shell shell-db logs \
   help
 
@@ -101,12 +100,12 @@ build:
 	@$(COMPOSE) build app
 	@printf "$(GREEN)✓ Image built.$(RESET)\n"
 
-## up           |  Start Postgres, Redis, LiteLLM, and Ollama (infra only)
+## up           |  Start all infra services (Postgres, Redis, LiteLLM, Ollama, mock-staging-api)
 up: check-env
-	@printf "$(CYAN)$(BOLD)▶ Starting infra (postgres, redis, litellm, ollama)...$(RESET)\n"
-	@$(COMPOSE) up --detach postgres redis litellm ollama
-	@printf "$(GREEN)✓ Infra running. (No app/API server yet — see Open Question #10.)$(RESET)\n"
-	@printf "$(YELLOW)  Local fallback models (ADR-023) are not pulled yet — run 'make pull-local-models'.$(RESET)\n"
+	@printf "$(CYAN)$(BOLD)▶ Starting infra...$(RESET)\n"
+	@$(COMPOSE) up --detach postgres redis litellm ollama mock-staging-api
+	@printf "$(GREEN)✓ Infra running.$(RESET)\n"
+	@printf "$(YELLOW)  Next: make pull-local-models → make init-db → make ingest → make serve$(RESET)\n"
 
 ## down         |  Stop containers (volumes preserved)
 down:
@@ -124,7 +123,25 @@ clean:
 #  RUNNING THE APP IMAGE (one-shot — see header note)
 # ==============================================================================
 
-## smoke        |  One-shot smoke check: graph builds, gateway/guardrail wired
+## bootstrap    |  Full first-time setup: up → pull-local-models → init-db → ingest → smoke → serve
+bootstrap: check-env
+	@printf "$(CYAN)$(BOLD)▶ Bootstrapping Sentinel from scratch...$(RESET)\n"
+	@$(MAKE) up
+	@$(MAKE) pull-local-models
+	@$(MAKE) init-db
+	@$(MAKE) ingest
+	@$(MAKE) smoke
+	@$(MAKE) serve
+	@printf "$(GREEN)$(BOLD)✓ Bootstrap complete. API running at http://localhost:8000$(RESET)\n"
+
+## serve        |  Start the FastAPI HTTP server (port 8000, ADR-024)
+serve: check-env
+	@printf "$(CYAN)$(BOLD)▶ Starting Sentinel HTTP API on port 8000...$(RESET)\n"
+	@$(COMPOSE) up --detach app
+	@printf "$(GREEN)✓ API running at http://localhost:8000$(RESET)\n"
+	@printf "$(YELLOW)  Docs: http://localhost:8000/docs   Health: http://localhost:8000/healthz$(RESET)\n"
+
+## smoke        |  One-shot wiring check: graph builds, gateway/guardrail wired
 smoke: check-env
 	@printf "$(CYAN)$(BOLD)▶ Running smoke check...$(RESET)\n"
 	@$(COMPOSE) run --rm app smoke
@@ -170,11 +187,18 @@ ingest:
 	@printf "$(CYAN)$(BOLD)▶ Running corpus ingestion...$(RESET)\n"
 	@python3 scripts/ingest_corpora.py
 
-## pull-local-models  |  Pull local Ollama fallback models (ADR-023, Feature 15)
+## pull-local-models  |  Pull Ollama models: fallbacks + llama-guard3 (ADR-023 + Phase5)
 pull-local-models:
-	@printf "$(CYAN)$(BOLD)▶ Pulling local fallback models into ollama...$(RESET)\n"
+	@printf "$(CYAN)$(BOLD)▶ Pulling local models into ollama...$(RESET)\n"
 	@bash scripts/pull_local_models.sh
 	@printf "$(GREEN)✓ Local models ready.$(RESET)\n"
+
+## init-db      |  Apply infra/schema.sql to Postgres (idempotent — safe to re-run)
+init-db:
+	@printf "$(CYAN)$(BOLD)▶ Initialising Postgres schema (pgvector + documents table)...$(RESET)\n"
+	@$(COMPOSE) exec -T $(DB_SERVICE) psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) \
+		-f /dev/stdin < infra/schema.sql
+	@printf "$(GREEN)✓ Schema applied.$(RESET)\n"
 
 # ==============================================================================
 #  HELP
@@ -191,5 +215,4 @@ help:
 	        desc=$$2; \
 	        printf "  $(CYAN)%-14s$(RESET) %s\n", target, desc \
 	      }' $(MAKEFILE_LIST)
-	@printf "\n$(BOLD)Note:$(RESET) no HTTP API/app server exists yet (Open Question #10).\n"
-	@printf "  'app' is a one-shot container — make test/smoke/shell each start it fresh.\n\n"
+	@printf "\n$(BOLD)First-time boot:$(RESET) make up → make pull-local-models → make init-db → make ingest → make serve\n\n"
