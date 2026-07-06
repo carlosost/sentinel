@@ -1,28 +1,32 @@
 """
-Tool executors (ADR-016): dispatch a resolved `{tool, args}` action to the
-mock staging API and normalize its response into `execution_result`'s pinned
+Tool executors (ADR-016, ADR-024): dispatch a resolved `{tool, args}` action to
+the mock staging API and normalize its response into `execution_result`'s pinned
 shape: `{"tool": str, "args": dict, "success": bool, "output": str, "error":
 Optional[str]}`.
 
-SANDBOX NOTE (ADR-021 addendum, Feature 10): ADR-016 specifies a real
-`mock-staging-api` docker-compose service (`infra/docker-compose.yml`) that
-`execute` calls via `httpx`. This sandbox has neither a Docker daemon nor
-`httpx` (no PyPI egress) to run/call it, so `get_staging_api_client()` below
-follows the same factory pattern as `src.gateway.client_factory`: a stdlib
-stand-in (`_StagingApiClient`) whose `.call()` raises `NotImplementedError`
-on the real network call. Tests monkeypatch `get_staging_api_client` exactly
-like `get_chat_client`/`get_embedding_client` are patched elsewhere — see
-`tests/graph/nodes/test_execute.py`. Open Question #15 tracks swapping this
-for a real `httpx`-backed client once this runs somewhere with Docker/PyPI
-access.
+ADR-024 (Production Readiness): `get_staging_api_client()` now returns a real
+`_HttpxStagingApiClient` when `httpx` is installed, falling back to the
+`_StagingApiClient` shim (ADR-021) otherwise. The mock-staging-api docker-compose
+service exposes the staging endpoint at `http://mock-staging-api`. Tests
+monkeypatch `get_staging_api_client` at the node's import path — unaffected by
+this change, since the seam is the factory function.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 from src.tools.registry import UnknownToolError, get_tool_spec
+
+# Real httpx — used when installed (ADR-024).
+try:
+    import httpx as _httpx
+    _HTTPX_AVAILABLE = True
+except ImportError:
+    _HTTPX_AVAILABLE = False
+
+_DEFAULT_BASE_URL = "http://mock-staging-api"
 
 
 class ExecutorError(RuntimeError):
@@ -33,22 +37,45 @@ class ExecutorError(RuntimeError):
 
 @dataclass
 class _StagingApiClient:
-    """Stand-in for an `httpx`-backed client against `mock-staging-api`
-    (ADR-021 addendum)."""
+    """Stdlib shim for an `httpx`-backed client against `mock-staging-api`
+    (ADR-021). Used automatically when httpx is not installed."""
 
-    base_url: str = "http://mock-staging-api"
+    base_url: str = _DEFAULT_BASE_URL
 
     def call(self, tool: str, args: dict) -> dict:  # pragma: no cover
         raise NotImplementedError(
             "Real staging-API calls require a live mock-staging-api service and "
-            "httpx (Open Question #15); not available in this sandbox."
+            "httpx (install it and start the service via `make up`)."
         )
 
 
-def get_staging_api_client() -> _StagingApiClient:
-    """Sole construction path for the staging-API client (mirrors
-    `client_factory.get_chat_client`'s role for model clients) — tests patch
-    this function, never `_StagingApiClient` directly."""
+@dataclass
+class _HttpxStagingApiClient:
+    """Real httpx-backed client against the mock-staging-api docker service
+    (ADR-016, ADR-024). Used when httpx is installed."""
+
+    base_url: str = _DEFAULT_BASE_URL
+    timeout: float = 10.0
+
+    def call(self, tool: str, args: dict) -> dict:
+        response = _httpx.post(
+            f"{self.base_url}/execute",
+            json={"tool": tool, "args": args},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+def get_staging_api_client():
+    """Return the appropriate staging-API client for the current environment.
+
+    Returns a real `_HttpxStagingApiClient` when httpx is installed; falls back
+    to the `_StagingApiClient` shim otherwise. Tests patch this function at the
+    node's import path — never instantiate the client class directly.
+    """
+    if _HTTPX_AVAILABLE:
+        return _HttpxStagingApiClient()
     return _StagingApiClient()
 
 

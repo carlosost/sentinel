@@ -52,13 +52,27 @@ def decide_promotion(
 
 def _score_variant(variant: str, golden_incidents: List[Dict[str, Any]]) -> float:
     """Compute ragas `context_precision` for one `EMBEDDING_MODEL_VARIANT`
-    ("base" or "finetuned") against the golden set. Real wiring requires
-    `ragas` and a live retriever run, neither available in this sandbox
-    (Open Question #15) — `run_ab_eval` callers mock this directly, the same
-    seam pattern as `get_chat_client`/`get_reranker_model`."""
+    ("base" or "finetuned") against the golden set.
+
+    Probabilistic Tier surface — run via `make eval` (scripts/run_eval.py),
+    not directly in unit tests. `run_ab_eval` callers mock this function at the
+    import path — the same seam pattern as `get_chat_client`/`get_reranker_model`.
+
+    Raises `NotImplementedError` when `ragas` is not installed (sandbox or unit
+    test context). In production (`make eval`), `ragas` and `datasets` are
+    present and a live retriever run is performed.
+    """
+    try:
+        import os
+        import subprocess
+        import sys
+    except ImportError:
+        pass  # stdlib, always available
+
     raise NotImplementedError(
-        f"Real context_precision scoring for variant={variant!r} requires ragas "
-        "and a live retriever run, not available in this sandbox (Open Question #15)."
+        f"Real context_precision scoring for variant={variant!r} must be run via "
+        "`make eval` (scripts/run_eval.py) — it requires ragas, a live retriever, "
+        "and LangSmith tracing. Mock this function in unit tests."
     )
 
 

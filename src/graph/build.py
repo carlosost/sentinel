@@ -61,7 +61,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from src.graph._compat import END, START, StateGraph
+# Prefer real langgraph when installed; fall back to stdlib shim (ADR-021/ADR-024).
+try:
+    from langgraph.graph import END, START, StateGraph
+except ImportError:
+    from src.graph._compat import END, START, StateGraph  # type: ignore[assignment]
 from src.graph.nodes.grade_documents import (
     ROUTE_PROCEED,
     ROUTE_RETRY,

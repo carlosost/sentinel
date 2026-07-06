@@ -1,28 +1,34 @@
 """
-Stdlib stand-in for the Postgres+pgvector `documents` table ADR-010 specifies
-(`documents(id, corpus, content, embedding, metadata)`).
+Document store for the `documents(id, corpus, content, embedding, metadata)` table
+(ADR-010, ADR-024).
 
-SANDBOX NOTE (ADR-021 addendum, Feature 04): this dev sandbox has neither
-`psycopg2` (no PyPI egress) nor a live Postgres instance to connect to, so the
-real `documents` table cannot be exercised here. `InMemoryDocumentStore` below
-is a plain-dict stand-in that preserves the table's row shape and its one
-load-bearing behavior for this feature — idempotent upsert keyed on a content
-hash, so re-running ingestion on unchanged source files does not duplicate
-rows (ADR-010's Gherkin scenario 2).
+ADR-024 (Production Readiness): `get_document_store(database_url)` returns a
+`PostgresDocumentStore` backed by real psycopg+pgvector when the package is installed
+and a `database_url` is provided, falling back to `InMemoryDocumentStore` (the
+ADR-021 stdlib shim) otherwise.
 
-This shim is intentionally narrow: it does NOT implement the cosine-similarity
-query the real `retriever` node (roadmap item 5 / Feature 05) will need —
-that's a SQL-level operation this stdlib stand-in has no way to represent
-faithfully, so Feature 05 is explicitly excluded from this swap and will need
-its own decision once real pgvector access exists. Open Question #15 tracks
-swapping this whole module for real psycopg2/pgvector.
+Both implementations expose the same interface (`upsert`, `count`,
+`rows_for_corpus`) so all callers — `scripts/ingest_corpora.py` and the
+`retriever` node — work unchanged against either backend.
+
+To initialise the real Postgres backend, run `infra/schema.sql` once against the
+database before the first `make ingest`. The SQL schema creates the `documents`
+table and the pgvector ivfflat index.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+# Real psycopg — used when installed (ADR-024).
+try:
+    import psycopg as _psycopg
+    _PSYCOPG_AVAILABLE = True
+except ImportError:
+    _PSYCOPG_AVAILABLE = False
 
 
 def content_hash(content: str) -> str:
@@ -40,8 +46,9 @@ class DocumentRow:
 
 
 class InMemoryDocumentStore:
-    """Dict-backed stand-in for the `documents` table. Keyed by content hash
-    so `upsert` is idempotent on unchanged input."""
+    """In-process fallback for the `documents` table (ADR-021). Dict-backed,
+    keyed by content hash so `upsert` is idempotent on unchanged input.
+    Used automatically when psycopg is not installed, and explicitly by tests."""
 
     def __init__(self) -> None:
         self._rows: Dict[str, DocumentRow] = {}
@@ -74,10 +81,88 @@ class InMemoryDocumentStore:
         return [row for row in self._rows.values() if row.corpus == corpus]
 
 
-# Process-wide singleton — the in-sandbox stand-in for "the one Postgres
-# `documents` table every node talks to" (ADR-021 addendum, Feature 05).
-# `scripts/ingest_corpora.py` writes here by default; `retriever`
-# (`src/graph/nodes/retriever.py`) reads from here by default. Tests construct
-# their own `InMemoryDocumentStore()` instances instead of touching this
-# singleton, so test runs never interfere with each other.
-default_store = InMemoryDocumentStore()
+class PostgresDocumentStore:
+    """Real document store backed by Postgres + pgvector (ADR-010, ADR-024).
+
+    Requires `psycopg` and a running Postgres instance with the pgvector
+    extension and `documents` table created via `infra/schema.sql`.
+
+    `upsert` is idempotent (ON CONFLICT DO UPDATE) — safe to re-run
+    `make ingest` against an already-populated database.
+    """
+
+    def __init__(self, conn) -> None:
+        self._conn = conn
+
+    def upsert(
+        self,
+        *,
+        corpus: str,
+        content: str,
+        embedding: List[float],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> DocumentRow:
+        row_id = content_hash(content)
+        self._conn.execute(
+            """
+            INSERT INTO documents (id, corpus, content, embedding, metadata)
+            VALUES (%s, %s, %s, %s::vector, %s)
+            ON CONFLICT (id) DO UPDATE
+                SET embedding = EXCLUDED.embedding,
+                    metadata  = EXCLUDED.metadata
+            """,
+            (row_id, corpus, content, embedding, json.dumps(metadata or {})),
+        )
+        self._conn.commit()
+        return DocumentRow(
+            id=row_id,
+            corpus=corpus,
+            content=content,
+            embedding=embedding,
+            metadata=metadata or {},
+        )
+
+    def count(self, corpus: Optional[str] = None) -> int:
+        if corpus is None:
+            row = self._conn.execute("SELECT COUNT(*) FROM documents").fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE corpus = %s", (corpus,)
+            ).fetchone()
+        return row[0] if row else 0
+
+    def rows_for_corpus(self, corpus: str) -> List[DocumentRow]:
+        rows = self._conn.execute(
+            "SELECT id, corpus, content, embedding, metadata FROM documents "
+            "WHERE corpus = %s",
+            (corpus,),
+        ).fetchall()
+        return [
+            DocumentRow(
+                id=r[0],
+                corpus=r[1],
+                content=r[2],
+                embedding=list(r[3]),
+                metadata=json.loads(r[4]) if isinstance(r[4], str) else (r[4] or {}),
+            )
+            for r in rows
+        ]
+
+
+def get_document_store(database_url: Optional[str] = None):
+    """Return the appropriate document store for the current environment.
+
+    Returns a `PostgresDocumentStore` when psycopg is installed and
+    `database_url` is provided; falls back to `InMemoryDocumentStore` otherwise.
+    """
+    if _PSYCOPG_AVAILABLE and database_url:
+        conn = _psycopg.connect(database_url)
+        return PostgresDocumentStore(conn)
+    return InMemoryDocumentStore()
+
+
+# Process-wide singleton used by ingest_corpora.py and the retriever node when
+# no store is injected explicitly. On a machine with psycopg + DATABASE_URL this
+# will become a PostgresDocumentStore; in the sandbox it stays InMemoryDocumentStore.
+import os as _os
+default_store = get_document_store(_os.environ.get("DATABASE_URL"))

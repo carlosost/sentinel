@@ -23,7 +23,11 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from src.graph._compat import interrupt
+# Prefer real langgraph when installed; fall back to stdlib shim (ADR-021/ADR-024).
+try:
+    from langgraph.types import interrupt
+except ImportError:
+    from src.graph._compat import interrupt  # type: ignore[assignment]
 from src.graph.state import IncidentState
 
 # Conditional-edge path_map keys for this node (used by build.py).
