@@ -112,9 +112,24 @@ model_list:
       model: ollama/bge-m3
       api_base: os.environ/OLLAMA_BASE_URL
 
+  # ADR-023 Phase 5 (2026-07-06): sentinel-guardrail's primary migrated from
+  # together_ai/meta-llama/Meta-Llama-Guard-3-8B to a locally-served Ollama
+  # instance — the last paid external dependency removed.
+  # `format: json` enforces JSON-constrained generation to match the custom
+  # JSON prompt in src/guardrails/check.py (same pattern as all other
+  # ollama_chat fallback entries). Note: Llama Guard 3 is trained as a safety
+  # classifier with its own native output format; the JSON-prompt approach in
+  # guardrail_check() deviates from that interface and may degrade classification
+  # quality vs. the native "safe/unsafe\nSN" format — monitor GuardrailCheckError
+  # rates after cutover. The fallback (openai/omni-moderation-latest) provides a
+  # reliable safety net.
   - model_name: sentinel-guardrail
     litellm_params:
-      model: together_ai/meta-llama/Meta-Llama-Guard-3-8B
+      model: ollama_chat/llama-guard3:8b
+      api_base: os.environ/OLLAMA_BASE_URL
+      # No `format: json` — Llama Guard 3 uses its native 'safe'/'unsafe\nS1'
+      # format, which guardrail_check()._parse_native() handles directly.
+      # JSON-constrained generation would interfere with the native format.
       fallbacks: ["sentinel-guardrail-fallback"]
   - model_name: sentinel-guardrail-fallback
     litellm_params:

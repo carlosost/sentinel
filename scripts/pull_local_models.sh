@@ -14,6 +14,7 @@ MODELS=(
   "llama3.1:8b-instruct-q4_K_M"
   "mistral-small:24b-instruct-2501-q4_K_M"
   "bge-m3"
+  "llama-guard3:8b"   # sentinel-guardrail primary (ADR-023 Phase 5, 2026-07-06)
 )
 
 COMPOSE_CMD="docker compose"

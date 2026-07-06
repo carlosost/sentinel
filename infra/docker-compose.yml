@@ -81,13 +81,10 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       OPENAI_API_KEY: "${OPENAI_API_KEY:?Missing OPENAI_API_KEY - copy infra/.env.example to infra/.env and fill it in, or run make check-env}"
-      TOGETHERAI_API_KEY: "${TOGETHERAI_API_KEY:?Missing TOGETHERAI_API_KEY - copy infra/.env.example to infra/.env and fill it in, or run make check-env}"
-      # ANTHROPIC_API_KEY / COHERE_API_KEY retired by ADR-023 (Feature 15, Phase 2) —
-      # the fallback aliases they backed now resolve to local Ollama-served models
-      # (see OLLAMA_BASE_URL below and infra/litellm_config.yaml). Not deleted
-      # silently: see docs/MIGRATION_PLAN.md and docs/PROJECT_MEMORY.md ADR-023 for why these
-      # two became optional. TOGETHERAI_API_KEY stays required (sentinel-guardrail's
-      # primary, untouched per ADR-023's Phase 5 scope boundary).
+      # ANTHROPIC_API_KEY / COHERE_API_KEY retired (ADR-023, Phase 2, 2026-06-28).
+      # TOGETHERAI_API_KEY retired (ADR-023, Phase 5, 2026-07-06) — sentinel-guardrail
+      # primary migrated to ollama_chat/llama-guard3:8b; no API key required.
+      # OPENAI_API_KEY is now the sole required external provider credential.
       OLLAMA_BASE_URL: "http://ollama:11434"
 
   mock-staging-api:
