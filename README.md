@@ -3,9 +3,10 @@
 Sentinel is a learning project for building a production-grade LLM application from
 scratch with LangGraph, LangSmith, LangChain, and Advanced RAG — built under a strict
 Spec-Driven Development → BDD → TDD workflow. **All 14 Phase 4 roadmap items are
-implemented and tested** (190/190 tests passing). See §10 (Project Retrospective) of
-`docs/PROJECT_MEMORY.md` for the full wrap-up, including what the sandbox this was built in
-could and couldn't verify.
+implemented and tested** (207/207 tests passing), all stdlib shims have been replaced
+with real packages via conditional imports (ADR-024), and the system ships a FastAPI
+HTTP server ready to run with `make bootstrap`. See §10 (Project Retrospective) of
+`docs/PROJECT_MEMORY.md` for the full wrap-up.
 
 ## What it does
 
@@ -50,7 +51,7 @@ The full node-by-node contract lives in `docs/PROJECT_MEMORY.md` §5.2.
 |---|---|
 | 1. Advanced RAG Mechanics | Query routing (single-corpus v1), pgvector retrieval, `bge-reranker-base` cross-encoder re-ranking, self-RAG relevance grading with bounded retries |
 | 2. Human-in-the-Loop | `interrupt()`-based `await_human_approval` node, `PostgresSaver` checkpointing, typed `{approved, modified_action, note}` resume contract |
-| 3. Guardrails | Llama Guard 3-8B at every entry/exit node, with binary `safe`/`unsafe` verdicts and a dedicated red-team eval dataset |
+| 3. Guardrails | Llama Guard 3-8B (local Ollama) at every entry/exit node, native `safe`/`unsafe\nSN` format parsed by a dual-parser with JSON fallback, dedicated red-team eval dataset |
 | 4. LLM Evals | Versioned golden incident set, `ragas` retrieval metrics, LangSmith LLM-as-judge rubric evaluator, separate `make eval` CI gate |
 | 5. AI Gateway | LiteLLM Proxy as the sole chokepoint for every model call — fallback chains, semantic caching (with an eval-determinism carve-out), per-key rate limits, trace-tagged cost logging |
 | 6. Fine-Tuning | Contrastive fine-tune of `bge-small-en-v1.5` from retriever/reranker LangSmith traces, A/B-evaluated and promoted behind a config flag |
@@ -73,36 +74,41 @@ The full node-by-node contract lives in `docs/PROJECT_MEMORY.md` §5.2.
 | API layer | FastAPI |
 | Spec / BDD | `behave` (Gherkin) |
 | Testing | `pytest` + `pytest-asyncio` |
-| Local infra | `docker-compose` (Postgres, Redis, LiteLLM proxy) |
+| Local models | `ollama` (llama3.1, mistral-small, bge-m3, llama-guard3) |
+| Local infra | `docker-compose` (Postgres, Redis, LiteLLM proxy, Ollama, mock-staging-api) |
 
 ## Repository layout
 
 ```
 src/
+  api/app.py                    # FastAPI HTTP server — POST /runs, POST /runs/{id}/approve
   gateway/client_factory.py     # sole construction path for every LLM/embedding client
-  guardrails/check.py           # guardrail_check() — Llama Guard via the gateway
+  guardrails/check.py           # guardrail_check() — Llama Guard 3 (Ollama) via gateway
   graph/
     state.py                    # IncidentState TypedDict
     build.py                    # StateGraph assembly + PostgresSaver wiring
+    checkpoint.py               # get_checkpointer() — PostgresSaver or in-memory fallback
     nodes/                      # one module per graph node
+  ingestion/document_store.py   # get_document_store() — PostgresDocumentStore or in-memory
+  retrieval/vector_search.py    # pgvector cosine search or plain-Python fallback
   tools/
     registry.py                 # tool name -> side_effecting flag
-    executors.py                # tool dispatch against the mock staging API
+    executors.py                # tool dispatch against the mock staging API (httpx)
 evals/
   golden_incidents.jsonl        # versioned eval set (reference root cause/remediation/rubric)
   judge_prompt.md               # LangSmith LLM-as-judge rubric prompt
   guardrail_redteam.jsonl       # labeled safe/unsafe examples for moderation accuracy
-  finetuning/                    # export_pairs.py, langsmith_spans.py, ab_eval.py
-  embeddings/                    # finetuned_embeddings.py (local fine-tuned model shim)
 scripts/
   ingest_corpora.py             # corpus -> pgvector ingestion
   run_eval.py                   # eval harness mechanics + guardrail red-team dataset
   export_finetune_pairs.py      # LangSmith spans -> contrastive JSONL pairs
   finetune_embedding_model.py   # sentence-transformers contrastive fine-tune
   ab_eval_embedding_model.py    # base vs. fine-tuned promotion gate
+  mock_staging_api/             # minimal FastAPI stub for the execute node's tool calls
 infra/
-  docker-compose.yml            # Postgres+pgvector, Redis, LiteLLM proxy, mock-staging-api
+  docker-compose.yml            # Postgres+pgvector, Redis, LiteLLM, Ollama, mock-staging-api
   litellm_config.yaml           # model aliases, fallback chains, rate limits
+  schema.sql                    # one-time DB init: pgvector extension + documents table
 memory/
   features/                     # one detail file per implemented feature (ADRs, Gherkin, PyTest)
 docs/
@@ -143,18 +149,34 @@ baseline met, and the Feature Log row filled in.
 
 ## Running it
 
-- `python3 -m unittest discover -s tests` — full Deterministic Tier suite (190/190 passing).
-- `python3 -m pyflakes src tests` (or your preferred linter) — lint check.
-- `scripts/*.py` — most exit non-zero or print an explicit sandbox-limitation
-  message rather than silently faking results; see docs/PROJECT_MEMORY.md §10 for
-  which scripts do which, and why.
+**First-time bootstrap** (credentials in `infra/.env`):
+```bash
+make bootstrap   # up → pull-local-models → init-db → ingest → smoke → serve
+```
+
+Individual steps:
+```bash
+make check-env          # validate credentials
+make up                 # start all infra containers
+make pull-local-models  # pull Ollama models (~14 GB, one-time)
+make init-db            # apply infra/schema.sql to Postgres
+make ingest             # embed corpora into pgvector
+make smoke              # wiring check (no server)
+make serve              # start API at http://localhost:8000
+```
+
+Without Docker (Deterministic Tier only):
+```bash
+make test-local         # 207/207 tests, no network required
+make lint               # gateway-usage lint
+```
 
 ## Status
 
-All 14 Phase 4 roadmap items are **done** (ADR-007 through ADR-020) — see §6
-(Feature Log), §9 (Roadmap), and §10 (Retrospective) of `docs/PROJECT_MEMORY.md`.
-Every feature is implemented and covered by Deterministic Tier tests, but none
-has run against its real external dependency (LLM, vector DB, LangSmith, etc.)
-— this sandbox has no PyPI/network/Docker egress, so every such dependency is
-a stdlib stand-in shim (ADR-021) that raises `NotImplementedError`. That ADR-021
-retrofit pass — swapping shims for real packages — is the honest next step.
+All 14 Phase 4 roadmap items are **done** (ADR-007 through ADR-020). All stdlib
+shims (ADR-021) have been replaced with conditional real-package imports (ADR-024):
+`langgraph`, `langchain-openai`, `psycopg`, `sentence-transformers`, `httpx`, and
+`langsmith` activate automatically when installed, falling back to the in-process
+shims otherwise — so `make test-local` continues to pass (207/207) with no network
+access. The HTTP API (`src/api/app.py`) is built and wired. `OPENAI_API_KEY` is the
+only required external credential; all other models run locally via Ollama.
