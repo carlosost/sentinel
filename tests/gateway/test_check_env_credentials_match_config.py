@@ -28,12 +28,13 @@ CHECK_ENV_PATH = _REPO_ROOT / "scripts" / "check_env.sh"
 
 #: Maps a `litellm_params.model`'s provider prefix to the env var LiteLLM
 #: needs to actually reach that provider. A prefix absent from this dict is
-#: assumed to need no credential (true today only for `ollama`/`ollama_chat`,
-#: which authenticate via `OLLAMA_BASE_URL`, not an API key) — add a new
-#: provider here the same day it's added to litellm_config.yaml, not after.
+#: assumed to need no credential (true for `ollama`/`ollama_chat`, which
+#: authenticate via `OLLAMA_BASE_URL`, not an API key) — add a new provider
+#: here the same day it's added to litellm_config.yaml, not after.
+#: `together_ai` removed (ADR-023 Phase 5, 2026-07-06): sentinel-guardrail
+#: migrated to ollama_chat/llama-guard3:8b; TOGETHERAI_API_KEY no longer required.
 _PROVIDER_PREFIX_TO_REQUIRED_VAR = {
     "openai": "OPENAI_API_KEY",
-    "together_ai": "TOGETHERAI_API_KEY",
 }
 
 _REQUIRED_VARS_PATTERN = re.compile(r"REQUIRED_VARS=\(([^)]*)\)")

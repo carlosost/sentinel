@@ -36,13 +36,13 @@ fi
 # REQUIRED_VARS[i] is backed-by description REQUIRED_DESCR[i].
 #
 # ANTHROPIC_API_KEY and COHERE_API_KEY removed (ADR-023, Feature 15, Phase 2) —
-# the fallback aliases they backed now resolve to local Ollama-served models
-# (infra/litellm_config.yaml), which need no API key. See docs/MIGRATION_PLAN.md /
-# docs/PROJECT_MEMORY.md ADR-023.
-REQUIRED_VARS=(OPENAI_API_KEY TOGETHERAI_API_KEY)
+# the fallback aliases they backed now resolve to local Ollama-served models.
+# TOGETHERAI_API_KEY removed (ADR-023 Phase 5, 2026-07-06) — sentinel-guardrail's
+# primary migrated from together_ai/Meta-Llama-Guard-3-8B to ollama_chat/llama-guard3:8b.
+# See docs/PROJECT_MEMORY.md ADR-023.
+REQUIRED_VARS=(OPENAI_API_KEY)
 REQUIRED_DESCR=(
   "sentinel-router, sentinel-grader, sentinel-diagnose, sentinel-propose-action, sentinel-postmortem, sentinel-judge, sentinel-embedding, sentinel-guardrail-fallback"
-  "sentinel-guardrail"
 )
 
 missing=()
