@@ -12,16 +12,18 @@ python3 -m unittest tests.graph.nodes.test_router.RouterNodeTests.test_router_us
 
 make lint                # gateway-usage lint (must pass before any merge)
 
-# Docker required
-make up                  # start Postgres + Redis + LiteLLM + Ollama
+# Docker required (Ollama runs on the HOST, not in Docker — start it first)
+# Install once: brew install ollama   (macOS) or https://ollama.com/install.sh (Linux)
+OLLAMA_HOST=0.0.0.0 ollama serve   # terminal 1: host Ollama for Metal GPU access
+make up                  # start Postgres + Redis + LiteLLM + mock-staging-api
 make test                # full pytest suite inside Docker with real deps
 make smoke               # one-shot graph build + gateway wiring check
 make ingest              # ingest corpora/ into pgvector (fails without live infra)
-make pull-local-models   # pull Ollama fallback models (~14 GB, one-time)
+make pull-local-models   # pull Ollama models to host (~22 GB, one-time)
 make eval                # Probabilistic Tier — ragas + LangSmith judge scores
 ```
 
-Credentials are required before `make up/smoke/test/shell` — copy `infra/.env.example` to `infra/.env` and fill in `OPENAI_API_KEY`, `TOGETHERAI_API_KEY`, `LITELLM_PROXY_URL`, `LITELLM_VIRTUAL_KEY`, `LANGCHAIN_API_KEY`, and `OLLAMA_BASE_URL`. `make check-env` validates this.
+Credentials are required before `make up/smoke/test/shell` — copy `infra/.env.example` to `infra/.env` and fill in `OPENAI_API_KEY`, `LITELLM_PROXY_URL`, `OLLAMA_BASE_URL`, `LANGSMITH_API_KEY`, and optionally `LITELLM_VIRTUAL_KEY`. `make check-env` validates this.
 
 ## Architecture
 
@@ -53,7 +55,7 @@ execute ─(failure)→ diagnose
 
 Model aliases (`sentinel-router`, `sentinel-diagnose`, `sentinel-embedding`, etc.) are defined in `infra/litellm_config.yaml`. Swapping the model behind an alias — including cloud-to-local swaps — is a YAML edit only, zero code change. See `docs/SWAPPING_MODELS.md` for the full runbook. Swapping the primary embedding model additionally requires `make ingest` to re-embed all corpora (dimension mismatch otherwise).
 
-`src/gateway/client_factory.py` currently returns stdlib shim objects (`_ChatClient`/`_EmbeddingClient`) whose `.invoke()`/`.embed_documents()` raise `NotImplementedError` — replace with real `langchain_openai` imports when the environment has PyPI access (Open Question #15 in `docs/PROJECT_MEMORY.md`).
+`src/gateway/client_factory.py` returns real `langchain_openai` objects when the package is installed (ADR-024), falling back to stdlib shims otherwise. The real `ChatOpenAI.invoke()` returns an `AIMessage` — `_ContentUnwrappingChatClient` wraps it to extract `.content` so all nodes receive a plain string, matching the shim contract.
 
 ### Test tiers
 

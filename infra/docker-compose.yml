@@ -8,23 +8,11 @@
 # — the HTTP API is wired (ADR-024, Open Question #10 resolved). `make test`/`make shell`
 # override the command for testing/debugging.
 #
-# Credentials: `litellm`'s required provider keys are OPENAI_API_KEY and
-# TOGETHERAI_API_KEY (frontier primaries + the guardrail primary) — come from
-# infra/.env — copy infra/.env.example to infra/.env and fill in real values.
-# `make check-env` (run automatically by `make up`/`smoke`/`test`/`shell`)
-# validates this up front with a readable error; the `${VAR:?...}` defaults
-# below are a second safety net in case this file is ever run with plain
-# `docker compose` instead of `make`. ANTHROPIC_API_KEY/COHERE_API_KEY are no
-# longer required (ADR-023, Feature 15, Phase 2) — the fallback aliases they
-# backed now resolve to local Ollama-served models instead.
-#
-# `ollama` (ADR-023, Feature 15, Phase 1): local model-serving backend for the
-# fallback tier's migration off paid Anthropic/Cohere models. Reached by
-# `litellm` via Docker service DNS at http://ollama:11434 — the host port
-# mapping below is for manual `curl`/testing only, not required for the
-# litellm<->ollama link. Models are pulled separately via
-# `make pull-local-models` (scripts/pull_local_models.sh), not baked into the
-# image, since they're multi-GB and shouldn't surprise a plain `make up`.
+# Ollama runs on the HOST (not in Docker) so it can access the Metal GPU on macOS.
+# On Apple Silicon this cuts inference time ~10-25x vs CPU-only Docker. Start it with:
+#   OLLAMA_HOST=0.0.0.0 ollama serve
+# Containers reach it via host.docker.internal:11434 (set as OLLAMA_BASE_URL below).
+# Pull models once with: make pull-local-models (scripts/pull_local_models.sh).
 
 services:
   postgres:
@@ -45,28 +33,6 @@ services:
     volumes:
       - redisdata:/data
 
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_models:/root/.ollama
-    # Uncomment if the host has an NVIDIA GPU + nvidia-container-toolkit installed.
-    # Falls back to CPU inference otherwise — slower, but functionally correct,
-    # which matters for the shadow-rollout comparison in Phase 4 (ADR-023).
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
     command: ["--config", "/app/config.yaml", "--port", "4000"]
@@ -76,22 +42,17 @@ services:
       - ./litellm_config.yaml:/app/config.yaml:ro
     depends_on:
       - redis
-      - ollama
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       OPENAI_API_KEY: "${OPENAI_API_KEY:?Missing OPENAI_API_KEY - copy infra/.env.example to infra/.env and fill it in, or run make check-env}"
-      # ANTHROPIC_API_KEY / COHERE_API_KEY retired (ADR-023, Phase 2, 2026-06-28).
-      # TOGETHERAI_API_KEY retired (ADR-023, Phase 5, 2026-07-06) — sentinel-guardrail
-      # primary migrated to ollama_chat/llama-guard3:8b; no API key required.
-      # OPENAI_API_KEY is now the sole required external provider credential.
-      OLLAMA_BASE_URL: "http://ollama:11434"
+      # Ollama runs on the host for Metal GPU access — reached via host.docker.internal.
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
 
   mock-staging-api:
     # Minimal FastAPI stub that accepts POST /execute with {tool, args} and returns
     # {success, output, error}. Provides a realistic async boundary for the `execute`
     # node (ADR-016, ADR-024) without touching real production systems.
-    # Build context: scripts/mock_staging_api/ (simple single-file FastAPI app).
     build:
       context: ..
       dockerfile: scripts/mock_staging_api/Dockerfile
@@ -121,14 +82,13 @@ services:
       LITELLM_PROXY_URL: http://litellm:4000
       LITELLM_VIRTUAL_KEY: ${LITELLM_VIRTUAL_KEY:-}
       DATABASE_URL: postgresql://sentinel:sentinel@postgres:5432/sentinel
-      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
-      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-sentinel}
+      LANGSMITH_TRACING: "true"
+      LANGSMITH_ENDPOINT: "https://api.smith.langchain.com"
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-sentinel}
       HF_TOKEN: ${HF_TOKEN:-}  # optional — suppresses HF Hub rate-limit warnings
-    # Default: start the FastAPI HTTP server (ADR-024, Open Question #10 resolved).
-    # Override via `docker compose run app smoke` or `docker compose run app test`.
     command: ["serve"]
 
 volumes:
   pgdata:
   redisdata:
-  ollama_models:

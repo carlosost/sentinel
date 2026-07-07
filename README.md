@@ -74,8 +74,8 @@ The full node-by-node contract lives in `docs/PROJECT_MEMORY.md` §5.2.
 | API layer | FastAPI |
 | Spec / BDD | `behave` (Gherkin) |
 | Testing | `pytest` + `pytest-asyncio` |
-| Local models | `ollama` (llama3.1, mistral-small, bge-m3, llama-guard3) |
-| Local infra | `docker-compose` (Postgres, Redis, LiteLLM proxy, Ollama, mock-staging-api) |
+| Local models | `ollama` (llama3.1, mistral-small, bge-m3, llama-guard3) — runs on host for Metal GPU |
+| Local infra | `docker-compose` (Postgres, Redis, LiteLLM proxy, mock-staging-api) |
 
 ## Repository layout
 
@@ -106,7 +106,7 @@ scripts/
   ab_eval_embedding_model.py    # base vs. fine-tuned promotion gate
   mock_staging_api/             # minimal FastAPI stub for the execute node's tool calls
 infra/
-  docker-compose.yml            # Postgres+pgvector, Redis, LiteLLM, Ollama, mock-staging-api
+  docker-compose.yml            # Postgres+pgvector, Redis, LiteLLM, mock-staging-api (Ollama on host)
   litellm_config.yaml           # model aliases, fallback chains, rate limits
   schema.sql                    # one-time DB init: pgvector extension + documents table
 memory/
@@ -149,16 +149,31 @@ baseline met, and the Feature Log row filled in.
 
 ## Running it
 
-**First-time bootstrap** (credentials in `infra/.env`):
+**Prerequisites — install Ollama on the host**
+
+Ollama runs natively on the host (not in Docker) so it can access the Metal GPU on
+Apple Silicon. This replaces the old `ollama` Docker service.
+
 ```bash
+brew install ollama          # one-time install (macOS)
+# Linux: curl -fsSL https://ollama.com/install.sh | sh
+```
+
+**First-time bootstrap** (credentials in `infra/.env`):
+
+```bash
+# 1. Start Ollama on the host (required — keep running in a separate terminal)
+OLLAMA_HOST=0.0.0.0 ollama serve
+
+# 2. Bootstrap everything else
 make bootstrap   # up → pull-local-models → init-db → ingest → smoke → serve
 ```
 
 Individual steps:
 ```bash
 make check-env          # validate credentials
-make up                 # start all infra containers
-make pull-local-models  # pull Ollama models (~14 GB, one-time)
+make up                 # start Postgres, Redis, LiteLLM, mock-staging-api
+make pull-local-models  # pull Ollama models to host (~22 GB, one-time)
 make init-db            # apply infra/schema.sql to Postgres
 make ingest             # embed corpora into pgvector
 make smoke              # wiring check (no server)

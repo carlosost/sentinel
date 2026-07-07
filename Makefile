@@ -100,11 +100,11 @@ build:
 	@$(COMPOSE) build app
 	@printf "$(GREEN)✓ Image built.$(RESET)\n"
 
-## up           |  Start all infra services (Postgres, Redis, LiteLLM, Ollama, mock-staging-api)
+## up           |  Start all infra services (Postgres, Redis, LiteLLM, mock-staging-api)
 up: check-env
 	@printf "$(CYAN)$(BOLD)▶ Starting infra...$(RESET)\n"
-	@$(COMPOSE) up --detach postgres redis litellm ollama mock-staging-api
-	@printf "$(GREEN)✓ Infra running.$(RESET)\n"
+	@$(COMPOSE) up --detach postgres redis litellm mock-staging-api
+	@printf "$(GREEN)✓ Infra running. Ollama runs on the host — start it with: OLLAMA_HOST=0.0.0.0 ollama serve$(RESET)\n"
 	@printf "$(YELLOW)  Next: make pull-local-models → make init-db → make ingest → make serve$(RESET)\n"
 
 ## down         |  Stop containers (volumes preserved)
@@ -161,7 +161,7 @@ shell-db:
 
 ## logs         |  Tail infra service logs  (Ctrl-C to exit)
 logs:
-	@$(COMPOSE) logs --follow postgres redis litellm ollama
+	@$(COMPOSE) logs --follow postgres redis litellm mock-staging-api app
 
 # ==============================================================================
 #  HOST-ONLY (NO DOCKER REQUIRED)

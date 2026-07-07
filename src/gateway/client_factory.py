@@ -188,17 +188,25 @@ def get_embedding_client(model: str, **kwargs):
     """
     extra = _with_trace_metadata(kwargs)
     if _LANGCHAIN_OPENAI_AVAILABLE:
-        # OpenAIEmbeddings does not forward unknown constructor kwargs to the
-        # underlying openai Embeddings.create() call — it dumps them into
-        # model_kwargs, which then surfaces as a TypeError at call time.
-        # `metadata` is a LiteLLM proxy-level header, not an OpenAI param,
-        # so strip it here. Trace IDs are still captured by LangSmith's
-        # auto-instrumentation on the surrounding traced_run() context.
+        # Two things stripped / overridden for OpenAIEmbeddings:
+        #
+        # 1. `metadata` — not forwarded by OpenAIEmbeddings to Embeddings.create();
+        #    it lands in model_kwargs and surfaces as a TypeError at call time.
+        #    Strip it here; trace IDs are still captured by LangSmith's
+        #    auto-instrumentation on the surrounding traced_run() context.
+        #
+        # 2. `check_embedding_ctx_length=False` — OpenAIEmbeddings uses tiktoken
+        #    to count tokens before sending the request. tiktoken doesn't know
+        #    LiteLLM alias names (e.g. "sentinel-embedding") and tries to fetch
+        #    the cl100k_base vocab file from the internet, which fails in air-gapped
+        #    or rate-limited environments. Disabling the check skips tiktoken
+        #    entirely; LiteLLM's proxy enforces the real model's context limit.
         embedding_extra = {k: v for k, v in extra.items() if k != "metadata"}
         return _RealEmbeddingClient(
             model=model,
             openai_api_base=_proxy_base_url(),
             openai_api_key=_virtual_key() or "unset",
+            check_embedding_ctx_length=False,
             **embedding_extra,
         )
     return _EmbeddingClient(

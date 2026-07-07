@@ -58,7 +58,7 @@ REQUIRED_DESCR=(
 # Needed by host-side scripts (make ingest, make eval, make smoke) and the
 # FastAPI server. Not provider keys; not scanned by the drift test.
 # ---------------------------------------------------------------------------
-APP_VARS=(LITELLM_PROXY_URL LANGCHAIN_API_KEY OLLAMA_BASE_URL)
+APP_VARS=(LITELLM_PROXY_URL LANGSMITH_API_KEY OLLAMA_BASE_URL)
 APP_DESCR=(
   "LiteLLM proxy URL for host-side scripts (should be http://localhost:4000)"
   "LangSmith tracing + make eval evaluator calls"

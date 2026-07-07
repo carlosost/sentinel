@@ -3,12 +3,10 @@
 # Ollama-served aliases depend on (infra/litellm_config.yaml, Phase 2). Idempotent —
 # `ollama pull` no-ops if the model is already present at that tag.
 #
-# Requires the `ollama` service from infra/docker-compose.yml to already be running
-# (`make up` starts it as a dependency of `litellm`). Run via `make pull-local-models`,
-# not directly, so the compose file/project context is always correct.
+# Ollama runs on the HOST for Metal GPU access (not in Docker) — this script calls
+# the host `ollama` CLI directly. Ensure Ollama is running before calling:
+#   OLLAMA_HOST=0.0.0.0 ollama serve
 set -euo pipefail
-
-COMPOSE_FILE="infra/docker-compose.yml"
 
 MODELS=(
   "llama3.1:8b-instruct-q4_K_M"
@@ -17,14 +15,14 @@ MODELS=(
   "llama-guard3:8b"   # sentinel-guardrail primary (ADR-023 Phase 5, 2026-07-06)
 )
 
-COMPOSE_CMD="docker compose"
-if ! docker compose version >/dev/null 2>&1; then
-  COMPOSE_CMD="docker-compose"
+if ! command -v ollama >/dev/null 2>&1; then
+  echo "ERROR: 'ollama' not found on PATH. Install it with: brew install ollama" >&2
+  exit 1
 fi
 
 for m in "${MODELS[@]}"; do
   echo "Pulling ${m} ..."
-  ${COMPOSE_CMD} -f "${COMPOSE_FILE}" exec ollama ollama pull "${m}"
+  ollama pull "${m}"
 done
 
 echo "All local fallback models pulled."
