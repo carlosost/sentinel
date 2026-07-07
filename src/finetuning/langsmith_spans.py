@@ -46,6 +46,10 @@ def get_retriever_reranker_spans(
         project_name: LangSmith project to query. Defaults to `LANGCHAIN_PROJECT`.
         limit: Maximum number of retriever run pairs to fetch.
     """
+    # LANGSMITH_API_KEY (not the legacy LANGCHAIN_API_KEY) — LangSmith renamed
+    # its env vars in mid-2025. LANGSMITH_PROJECT likewise replaces
+    # LANGCHAIN_PROJECT. Using the old names causes silent fall-through to the
+    # shim (NotImplementedError below) even when a real key is configured.
     if not (_LANGSMITH_AVAILABLE and os.environ.get("LANGSMITH_API_KEY")):
         raise NotImplementedError(
             "Fetching real LangSmith retriever/reranker spans requires the langsmith "

@@ -1,6 +1,35 @@
 """
 Sole construction path for every LLM/embedding client in the codebase.
 
+**Architectural pattern — Gateway:** this module is the single chokepoint
+through which every LLM and embedding call must pass.  No node, eval script,
+or guardrail may construct a provider client directly — ADR-006 enforces this
+with a CI lint script (`scripts/lint_gateway_usage.sh`) that fails the build
+on any direct `openai`/`anthropic` import outside `src/gateway/`.  The
+two-layer Gateway design is:
+
+  Code level  — `get_chat_client()` / `get_embedding_client()` here.
+                Every caller goes through these factory functions; the
+                functions own proxy URL, virtual key, and trace metadata.
+  Infra level — LiteLLM Proxy (`infra/litellm_config.yaml`).
+                Every model call hits the proxy, which applies fallback
+                chains, semantic caching, and per-key rate limits before
+                forwarding to the real provider.
+
+**Architectural pattern — Factory:** `get_chat_client` and
+`get_embedding_client` are factory functions, not constructors.  They pick
+the right implementation (real `langchain_openai` client or stdlib shim)
+based on what's installed, inject the proxy URL and API key, and attach
+trace metadata — none of which the calling node needs to know about.
+
+**Architectural pattern — Strategy (conditional-import shim system):**
+`_ChatClient`/`_EmbeddingClient` (shims, ADR-021) and
+`ChatOpenAI`/`OpenAIEmbeddings` (real, ADR-024) are two strategies behind
+the same `invoke()`/`embed_documents()` interface.  The factory selects the
+strategy at import time based on `_LANGCHAIN_OPENAI_AVAILABLE`.  Tests rely
+on this: they mock at the factory boundary, never at the class level, which
+makes them implementation-agnostic.
+
 ADR-003: the LiteLLM Proxy sits in front of every model call. ADR-006: a CI lint
 (scripts/lint_gateway_usage.sh) rejects any direct `openai`/`anthropic` import or
 client construction outside this module. Every node, eval script, and guardrail
@@ -40,13 +69,17 @@ except ImportError:
 
 
 class _ContentUnwrappingChatClient:
-    """Thin wrapper around the real ChatOpenAI that unwraps AIMessage → str.
+    """Adapter: wraps the real ChatOpenAI to present the shim's string interface.
 
-    Every node in this codebase was written against the stdlib shim's
-    `.invoke()` contract, which returned a plain string. The real
-    `langchain_openai.ChatOpenAI.invoke()` returns an `AIMessage` object.
-    Rather than touching every node, this wrapper extracts `.content` so the
-    rest of the codebase sees the same string interface it always has.
+    **Architectural pattern — Adapter:** the real
+    `langchain_openai.ChatOpenAI.invoke()` returns an `AIMessage` object;
+    every node in this codebase was written against the stdlib shim's
+    contract, which returned a plain `str`.  Rather than updating every node
+    (violating the Open/Closed Principle) or monkey-patching LangChain, this
+    thin wrapper adapts the `AIMessage` → `str` impedance mismatch at the
+    single point where real clients are constructed.  `__getattr__` delegation
+    means all other attributes (`.model_name`, `.openai_api_base`, etc.) pass
+    through transparently to the underlying client.
     """
 
     def __init__(self, client) -> None:

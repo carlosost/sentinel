@@ -106,6 +106,25 @@ from src.graph.state import IncidentState
 def build_graph(checkpointer: Optional[object] = None) -> StateGraph:
     """Construct and compile the Sentinel graph for the current feature set.
 
+    **Architectural pattern — Graph State Machine:** this function is the
+    assembly point for the project's dominant pattern.  Every processing
+    step (guardrail, router, retriever, …) is a *node* — a pure function
+    `(IncidentState) -> dict`.  All control flow lives in *conditional edges*
+    (routing functions) rather than inside nodes.  LangGraph's `StateGraph`
+    merges each node's returned dict into the shared `IncidentState`,
+    propagating it to whichever node the routing function selects next.
+    Cycles (`grade_documents -> router`, `execute -> diagnose`) and
+    indefinite pauses (`await_human_approval` via `interrupt()`) are
+    first-class graph constructs, not workarounds bolted onto a pipeline.
+
+    **Factory for the checkpointer:** `checkpointer` is injected here rather
+    than constructed inside this function.  The caller (production: `app.py`;
+    tests: individual test cases) picks the right backend via
+    `get_checkpointer()` (src/graph/checkpoint.py) and passes it in.  This
+    keeps the graph itself decoupled from storage concerns — swapping
+    `InMemoryCheckpointSaver` for `PostgresSaver` is a one-line change at
+    the call site, zero change inside the graph.
+
     `checkpointer` (Feature 09/ADR-015) is the sandbox `InMemoryCheckpointSaver`
     stand-in for `PostgresSaver` — pass the same instance across separate
     `build_graph()` calls to simulate resuming a paused thread after a process

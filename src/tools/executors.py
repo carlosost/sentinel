@@ -26,6 +26,10 @@ try:
 except ImportError:
     _HTTPX_AVAILABLE = False
 
+# Port 8001 is explicit and required: bare `http://mock-staging-api` without a
+# port defaults to 80, which the mock service does not bind to — the execute
+# node returned `[Errno 111] Connection refused` until this was pinned.
+# The mock-staging-api docker-compose service binds 8001:8001 (infra/docker-compose.yml).
 _DEFAULT_BASE_URL = "http://mock-staging-api:8001"
 
 

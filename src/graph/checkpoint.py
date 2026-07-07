@@ -79,6 +79,16 @@ class InMemoryCheckpointSaver:
 def get_checkpointer(database_url: Optional[str] = None):
     """Return the appropriate checkpointer for the current environment.
 
+    **Architectural pattern — Factory + Strategy:** this function is a
+    factory that selects between two strategies at runtime:
+    `InMemoryCheckpointSaver` (shim, always available) and
+    `PostgresSaver` (real, requires psycopg + a live database).  Both
+    expose the same surface (`setup()`, `save()`, `load()`, etc.) so
+    `build_graph()` and the HTTP API can call `checkpointer.setup()`
+    unconditionally without knowing which backend is active.  Swapping
+    to Postgres in production is a one-line change at the call site
+    (pass `DATABASE_URL`); zero changes inside the graph or the nodes.
+
     Returns a real `PostgresSaver` (connected to `database_url`) when
     `langgraph-checkpoint-postgres` and `psycopg` are installed and a
     `database_url` is supplied. Falls back to `InMemoryCheckpointSaver` when

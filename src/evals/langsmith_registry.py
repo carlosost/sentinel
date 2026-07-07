@@ -79,7 +79,13 @@ class _LangSmithEvaluatorRegistry:
 
 
 def _build_registry():
-    """Return the appropriate registry for the current environment."""
+    """Return the appropriate registry for the current environment.
+
+    Checks LANGSMITH_API_KEY, not the legacy LANGCHAIN_API_KEY: LangSmith
+    renamed its environment variables in mid-2025. The LangSmith SDK itself
+    (>=0.1.x) reads LANGSMITH_API_KEY natively; the old name is no longer
+    honoured and would silently fall through to the in-process shim.
+    """
     if _LANGSMITH_AVAILABLE and os.environ.get("LANGSMITH_API_KEY"):
         return _LangSmithEvaluatorRegistry(_LangSmithClient())
     return _EvaluatorRegistry()

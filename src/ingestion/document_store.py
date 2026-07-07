@@ -2,6 +2,21 @@
 Document store for the `documents(id, corpus, content, embedding, metadata)` table
 (ADR-010, ADR-024).
 
+**Architectural pattern — Repository:** `InMemoryDocumentStore` and
+`PostgresDocumentStore` are two implementations of the same implicit
+Repository interface (`upsert`, `count`, `rows_for_corpus`).  All callers
+— `scripts/ingest_corpora.py` and the `retriever` node — work against this
+interface and never reference `psycopg` or SQL directly.  Swapping backends
+is transparent: `get_document_store(database_url)` selects the right
+implementation at process startup (see the **Factory** note on that function
+below), and call sites require zero changes.
+
+**Architectural pattern — Factory:** `get_document_store(database_url)` is
+the sole construction path for both implementations.  It encapsulates the
+"which backend?" decision so no caller imports `PostgresDocumentStore` or
+`InMemoryDocumentStore` by name — the same discipline as
+`get_checkpointer()` and `get_chat_client()` elsewhere in the codebase.
+
 ADR-024 (Production Readiness): `get_document_store(database_url)` returns a
 `PostgresDocumentStore` backed by real psycopg+pgvector when the package is installed
 and a `database_url` is provided, falling back to `InMemoryDocumentStore` (the

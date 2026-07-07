@@ -49,6 +49,18 @@ _MODEL_CACHE: dict = {}
 def get_reranker_model(model_name: str = "BAAI/bge-reranker-base"):
     """Return a cross-encoder reranker for the given model name.
 
+    **Architectural pattern — Factory + Strategy + Singleton:** this function
+    is a factory that selects between two strategies (`_RealCrossEncoder` when
+    `sentence-transformers` is installed, `_CrossEncoder` shim otherwise) and
+    caches the result in `_MODEL_CACHE` — so the first call pays the ~2-4 s
+    model-load cost, and every subsequent call is a dict lookup.  The
+    Singleton aspect is intentional and scoped to the model name key: two
+    different model names produce two separate cached instances.  Tests patch
+    the *factory function* at the node's import path (`src.graph.nodes.reranker.
+    get_reranker_model`), which means they're completely decoupled from whether
+    the real or shim implementation is active — the same seam pattern used by
+    `get_chat_client`, `get_checkpointer`, and `get_document_store`.
+
     Returns a real `sentence_transformers.CrossEncoder` when the package is
     installed; falls back to the `_CrossEncoder` shim otherwise. The model is
     loaded once on first call and cached at module level — subsequent calls for

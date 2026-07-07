@@ -1,6 +1,21 @@
 """
 `IncidentState` — the single shared state schema threaded through every graph node.
 
+**Architectural pattern — Shared State in a Graph State Machine:** in a
+LangGraph `StateGraph`, all nodes share a single typed state object rather
+than passing data pairwise between steps.  Each node receives the full
+`IncidentState`, reads whatever fields it needs, and returns a *partial
+dict* of only the fields it updates.  LangGraph merges that dict back into
+the canonical state before routing to the next node.  This means:
+
+  - Nodes are pure functions: `(IncidentState) -> dict`.  No node holds
+    instance state; all cross-node communication is explicit in this schema.
+  - Adding a field for a new feature is an additive, non-breaking change:
+    existing nodes that don't use the field are unaffected.
+  - The schema is the contract.  Any field a downstream node reads must
+    be declared here; the TypedDict gives static type-checking on the read
+    side, and the partial-dict merge gives runtime safety on the write side.
+
 This is the *initial* Phase 1 shape (ADR-007/Feature 01). It is amended additively by
 later features as their ADRs specify — see docs/PROJECT_MEMORY.md §5.1 for the cumulative,
 canonical contract and which ADR introduced/amended each field. Each amendment is

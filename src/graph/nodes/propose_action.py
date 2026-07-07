@@ -43,6 +43,16 @@ Diagnosis:
 
 
 def _format_tool_list() -> str:
+    """Build the tool inventory injected into the LLM prompt.
+
+    This exists because without an explicit tool list the LLM hallucinated
+    tool names from its training data (e.g. `kubectl`) that are not in the
+    registry — causing a hard `ProposeActionError` on every real-infra run.
+    Enumerating valid tool names in the prompt eliminates that failure mode
+    by constraining the model's choice space to names that `get_tool_spec`
+    will actually accept.  The `side_effecting` tag is included so the model
+    has context about the risk level of each tool (read-only vs. destructive).
+    """
     lines = []
     for name, spec in TOOL_REGISTRY.items():
         tag = "side-effecting" if spec["side_effecting"] else "read-only"

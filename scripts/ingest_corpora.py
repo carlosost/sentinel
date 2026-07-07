@@ -75,6 +75,12 @@ def ingest_all(
 
 def main() -> int:
     database_url = os.environ.get("DATABASE_URL")
+    # get_document_store() is critical here: an earlier version hardcoded
+    # InMemoryDocumentStore() which meant every ingest produced a store that
+    # was immediately discarded — the retriever node uses a *different*
+    # PostgresDocumentStore instance and would return zero documents on every
+    # query.  Using the same get_document_store(database_url) factory ensures
+    # both this script and the retriever node write/read the same backend.
     store = get_document_store(database_url)
     backend = "PostgresDocumentStore" if database_url else "InMemoryDocumentStore (no DATABASE_URL set)"
     print(f"Sentinel corpus ingestion — {CORPORA_ROOT.relative_to(REPO_ROOT)}")
