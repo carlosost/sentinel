@@ -29,7 +29,7 @@ class LangSmithRegistryError(Exception):
 
 class _EvaluatorRegistry:
     """In-process evaluator registry (ADR-021 shim). Used when langsmith is
-    not installed or LANGCHAIN_API_KEY is not set."""
+    not installed or LANGSMITH_API_KEY is not set."""
 
     def __init__(self) -> None:
         self._evaluators: Dict[str, Callable] = {}
@@ -80,7 +80,7 @@ class _LangSmithEvaluatorRegistry:
 
 def _build_registry():
     """Return the appropriate registry for the current environment."""
-    if _LANGSMITH_AVAILABLE and os.environ.get("LANGCHAIN_API_KEY"):
+    if _LANGSMITH_AVAILABLE and os.environ.get("LANGSMITH_API_KEY"):
         return _LangSmithEvaluatorRegistry(_LangSmithClient())
     return _EvaluatorRegistry()
 

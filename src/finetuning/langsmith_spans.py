@@ -3,7 +3,7 @@
 
 ADR-024 (Production Readiness): `get_retriever_reranker_spans()` now fetches
 real LangSmith `retriever`/`reranker` run pairs when `langsmith` is installed
-and `LANGCHAIN_API_KEY` + `LANGCHAIN_PROJECT` are set. Falls back to raising
+and `LANGSMITH_API_KEY` + `LANGSMITH_PROJECT` are set. Falls back to raising
 `NotImplementedError` (the ADR-021 shim) otherwise.
 
 Tests patch `get_retriever_reranker_spans` directly at the script's import path
@@ -37,22 +37,22 @@ def get_retriever_reranker_spans(
     "reranked_docs": [...]}` (ADR-011 document shape), consumed by
     `scripts/export_finetune_pairs.py` to build fine-tuning pairs.
 
-    When `langsmith` is installed and `LANGCHAIN_API_KEY` is set, fetches real
+    When `langsmith` is installed and `LANGSMITH_API_KEY` is set, fetches real
     runs from the project named by `project_name` (defaults to
-    `LANGCHAIN_PROJECT` env var). Raises `NotImplementedError` when neither
+    `LANGSMITH_PROJECT` env var). Raises `NotImplementedError` when neither
     condition holds — the same fail-loud discipline as the other ADR-021 shims.
 
     Args:
         project_name: LangSmith project to query. Defaults to `LANGCHAIN_PROJECT`.
         limit: Maximum number of retriever run pairs to fetch.
     """
-    if not (_LANGSMITH_AVAILABLE and os.environ.get("LANGCHAIN_API_KEY")):
+    if not (_LANGSMITH_AVAILABLE and os.environ.get("LANGSMITH_API_KEY")):
         raise NotImplementedError(
             "Fetching real LangSmith retriever/reranker spans requires the langsmith "
-            "package and LANGCHAIN_API_KEY to be set (run `make up` or set the env var)."
+            "package and LANGSMITH_API_KEY to be set (run `make up` or set the env var)."
         )
 
-    project = project_name or os.environ.get("LANGCHAIN_PROJECT", "sentinel")
+    project = project_name or os.environ.get("LANGSMITH_PROJECT", "sentinel")
     client = _LangSmithClient()
 
     # Fetch retriever runs paired with their sibling reranker runs.

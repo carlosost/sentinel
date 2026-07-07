@@ -40,14 +40,25 @@ class _CrossEncoder:
         )
 
 
+# Module-level model cache — loaded once at first call, reused on every
+# subsequent request. Loading bge-reranker-base takes ~2-4s and allocates
+# ~500 MB; per-request construction would be unacceptably slow in production.
+_MODEL_CACHE: dict = {}
+
+
 def get_reranker_model(model_name: str = "BAAI/bge-reranker-base"):
     """Return a cross-encoder reranker for the given model name.
 
     Returns a real `sentence_transformers.CrossEncoder` when the package is
-    installed; falls back to the `_CrossEncoder` shim otherwise. Tests patch
+    installed; falls back to the `_CrossEncoder` shim otherwise. The model is
+    loaded once on first call and cached at module level — subsequent calls for
+    the same `model_name` return the cached instance with no I/O. Tests patch
     this function (or `.predict` on its return value) at the node's import path.
     Deliberately outside the gateway module (ADR-011).
     """
-    if _SENTENCE_TRANSFORMERS_AVAILABLE:
-        return _RealCrossEncoder(model_name)  # type: ignore[return-value]
-    return _CrossEncoder(model_name=model_name)
+    if model_name not in _MODEL_CACHE:
+        if _SENTENCE_TRANSFORMERS_AVAILABLE:
+            _MODEL_CACHE[model_name] = _RealCrossEncoder(model_name)  # type: ignore[assignment]
+        else:
+            _MODEL_CACHE[model_name] = _CrossEncoder(model_name=model_name)
+    return _MODEL_CACHE[model_name]
