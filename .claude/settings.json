@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r f; case \"$f\" in */src/*.py|src/*.py|*/scripts/*.py|scripts/*.py) bash scripts/lint_gateway_usage.sh ;; esac; }",
+            "statusMessage": "Checking gateway-only usage (ADR-006)..."
+          },
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r f; base=\"$(basename \"$f\" .py)\"; case \"$f\" in */src/graph/nodes/*.py|src/graph/nodes/*.py) if [ \"$base\" != \"__init__\" ] && [ -f \"tests/graph/nodes/test_${base}.py\" ]; then python3 -m unittest \"tests.graph.nodes.test_${base}\"; fi ;; esac; }",
+            "statusMessage": "Running matching node test..."
+          }
+        ]
+      }
+    ]
+  }
+}

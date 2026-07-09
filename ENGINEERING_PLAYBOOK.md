@@ -322,6 +322,91 @@ agent runs the test suite and pastes the output. A response of "this should work
 without a test run is not acceptable. The output of `make test-local` is the
 acceptance criterion.
 
+### 2.6 Claude Code Environment: Skills, Subagents, and Hooks
+
+Sections 1–2.5 describe a spec-driven convention (PMA, ADRs, Conflict Check,
+Gherkin/PyTest, Definition of Done) that lives as *prose* — an agent has to be told,
+in every session, to follow it. The next step is turning the convention itself into
+Claude Code configuration so it's assisted or enforced automatically, and so a new
+project or a new developer can pick it up by copying three directories rather than
+re-reading this whole playbook.
+
+Three configuration surfaces, three different jobs:
+
+| Surface | Job | Fires when |
+|---|---|---|
+| **Skill** (`.claude/skills/<name>/SKILL.md`) | Scaffold a recurring, template-shaped artifact | User runs `/name`, or Claude invokes it when the description matches the task |
+| **Subagent** (`.claude/agents/<name>.md`) | Do exhaustive or specialized analysis in an isolated context | Claude dispatches it (or user asks for it by name) — runs with its own tool scope and doesn't pollute the main conversation |
+| **Hook** (`.claude/settings.json`) | Enforce an invariant or run fast feedback automatically | A tool event fires (`PostToolUse` on `Write\|Edit`, etc.) — no prompting required |
+
+**The pattern, generalized:** every recurring piece of *process* this playbook
+documents in prose is a candidate for one of these three. If it's a template you fill
+in by hand each time → skill. If it's an exhaustive cross-check a human would do by
+scanning a big list → subagent. If it's a CI-blocking rule you'd otherwise only catch
+at merge time → hook.
+
+**Reference implementation (this repo, `.claude/`):**
+
+- **Skill `new-feature-spec`** — scaffolds `memory/features/feature-NN-*.md`
+  (§1.1/§2.1's convention). Auto-detects the next feature number
+  (`grep -oE 'feature-[0-9]+' memory/features/* | sort -V | tail -1`), pulls every
+  current ADR from the PMA to pre-populate the Conflict Check table with `TBD`
+  placeholders (never silently omits one), and copies the Definition of Done
+  checklist verbatim from §8.5 so it can't drift out of sync with the PMA's own copy.
+  It deliberately does **not** fill in the substance (the actual conflict verdicts,
+  Gherkin, test bodies) — scaffolding a template that looks finished but isn't would
+  be worse than no scaffold.
+- **Skill `record-adr`** — appends a correctly-numbered ADR to the PMA in the exact
+  `### ADR-NNN: Title` / Context / Decision / Consequences / Status shape from §1.3,
+  inserted at the right section boundary (`grep -n '^## '`), never invents the
+  decision's content.
+- **Subagent `adr-conflict-checker`** — automates the "Conflict Check" step from
+  §1.4/§2.1 exactly: read the PMA, enumerate every ADR, produce a verdict
+  (No conflict / Extends / Conflict / Amends) for each one plus the non-ADR contract
+  surfaces (§5.1 state schema, §5.2 graph skeleton, §5.3 gateway contract, §8
+  workflow blueprint). Read-only tools only (`Read, Grep, Glob, LS`) — this subagent
+  analyzes, it never edits.
+- **Subagent `security-reviewer`** — specialized, not generic: it knows this
+  project's three specific trust boundaries (guardrail moderation, the
+  `TOOL_REGISTRY`-only `side_effecting` lookup, the HITL approval gate) and checks
+  for bypass paths around exactly those, citing the concrete file/function each time
+  rather than generic OWASP language. The lesson generalizes: a security subagent
+  described in terms of *this system's* actual dangerous surface finds real bugs;
+  one described in generic terms mostly restates a checklist.
+- **Hook: gateway-lint-on-save** (`PostToolUse`, matcher `Write|Edit`) — runs
+  `scripts/lint_gateway_usage.sh` (ADR-006) the moment a `.py` file under `src/` or
+  `scripts/` is edited, instead of only at manual `make lint` time. Filters by path
+  inside the hook command itself (`case "$f" in */src/*.py|...`), not by a second
+  matcher, since hook matchers only see the tool name, not the file path.
+- **Hook: run-matching-node-test-on-save** (`PostToolUse`, matcher `Write|Edit`) —
+  editing `src/graph/nodes/<name>.py` runs `python3 -m unittest
+  tests.graph.nodes.test_<name>` immediately (Deterministic Tier — mocked, no
+  network, matches §2.2's "there is never a reason to defer running it"
+  philosophy). No-ops if the test module doesn't exist yet, rather than erroring.
+
+**Construction discipline that mattered in practice:**
+
+1. **Pipe-test every hook command against a synthetic stdin payload before writing
+   it to `settings.json`** — `echo '{"tool_input":{"file_path":"..."}}' | <command>`
+   against both a matching and a non-matching real path. A hook that silently does
+   nothing is worse than no hook, and you cannot tell the difference from the
+   settings file alone.
+2. **Validate the JSON with `jq -e` against the exact query the hook engine would
+   run** before writing — a malformed `settings.json` silently disables every hook
+   in that file, not just the broken one.
+3. **Hooks load once at session start.** A hook added to `.claude/settings.json`
+   mid-session will not appear in `/hooks` and will not fire until the session is
+   fully restarted (not just `/reload-plugins` or re-running `/hooks`) — unlike
+   skills and subagents, which this environment picked up without a restart. Budget
+   for this when documenting a setup for a new developer: "restart your session
+   after pulling `.claude/`" is a real step, not a formality.
+4. **A silent-success hook is invisible by design** — the UI only surfaces a "Ran N
+   hooks" indicator or an error banner when a hook fails or is slow. To actually
+   prove a hook fires (versus just proving its command is correct in isolation),
+   trigger a real, reversible edit that forces a *visible* failure (e.g. a
+   deliberate, temporary ADR-006 violation), confirm the failure surfaces, then
+   revert immediately. Don't rely on "no error shown" as proof of anything.
+
 ---
 
 ## 3. Core Architecture & Local Model Migration
@@ -981,4 +1066,47 @@ After fix: paste make test-local output.
 [ ] 8. make smoke: gateway wiring check passes
 [ ] 9. make ingest: corpus embedded with new fallback model
 [ ] 10. Paid API keys revoked at provider dashboards (attestation required)
+```
+
+### A.4 New-Project Claude Code Environment Setup (Skills / Subagents / Hooks)
+
+Copy-paste checklist for replicating §2.6's environment on a new project or for a new
+developer joining this one. The three `.claude/` subdirectories are portable as-is;
+only the *content* (which ADRs, which node paths, which lint script) needs adapting.
+
+```
+[ ] 1. Identify your project's recurring spec artifacts (this project: feature specs,
+       ADRs). Write one skill per artifact type in .claude/skills/<name>/SKILL.md.
+       Each skill scaffolds structure only — next-number detection, template shape,
+       cross-references to existing entries — never invents the substance.
+[ ] 2. Identify exhaustive/mechanical checks a human currently does by hand (this
+       project: the Conflict Check against every ADR). Write one subagent per check
+       in .claude/agents/<name>.md with read-only tools (Read, Grep, Glob, LS) unless
+       it genuinely needs to edit.
+[ ] 3. Identify your project's specific dangerous surface (not a generic security
+       checklist) and write a specialized reviewer subagent naming the exact
+       files/functions/trust boundaries — e.g. "side_effecting must come from
+       TOOL_REGISTRY, never from LLM output" is checkable; "watch for security
+       issues" is not.
+[ ] 4. Identify CI-blocking invariants that currently only fail at merge time (this
+       project: scripts/lint_gateway_usage.sh / ADR-006). Add a PostToolUse hook in
+       .claude/settings.json, matcher "Write|Edit", filtering by path inside the hook
+       command (matchers see only the tool name, not the file path).
+[ ] 5. Identify your fastest test tier (this project: the Deterministic Tier, <1s,
+       no network) and add a PostToolUse hook that runs the narrowest matching test
+       module on save — not the full suite; instant feedback only works if it's fast.
+[ ] 6. Pipe-test every hook command against a synthetic stdin JSON payload (matching
+       AND non-matching paths) before writing settings.json. Validate the written
+       JSON with `jq -e '.hooks.PostToolUse[] | select(.matcher == "...") | .hooks[]
+       | .command'` — exit 0 and the expected command printed back.
+[ ] 7. Restart the Claude Code session after writing .claude/settings.json for the
+       first time. Hooks load once at session start; /hooks or /reload-plugins alone
+       will not pick up a brand-new settings.json (skills/subagents are picked up
+       without a restart — hooks are the exception).
+[ ] 8. Run /hooks after restart to confirm the count matches what you wrote.
+[ ] 9. Prove at least one hook fires with a real, reversible edit designed to force
+       a visible failure (success is silent by design) — then revert it immediately.
+[ ] 10. Document the three directories' locations and purposes in this playbook (or
+        your project's equivalent) so the next developer copies them instead of
+        rediscovering the pattern.
 ```
